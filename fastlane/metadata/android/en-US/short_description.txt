@@ -1,0 +1,1 @@
+Notes and checklists as plain .txt files, synced over local Wi-Fi.

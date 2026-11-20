@@ -1,0 +1,8 @@
+**Weekend trip** @cyan
+Leaving **Friday 6pm**, back Sunday.
+- [x] book the cabin
+- [ ] pack
+	- [ ] rain jacket
+	- [ ] hiking boots
+- [ ] fill up the car
+#travel

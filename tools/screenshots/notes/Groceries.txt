@@ -1,0 +1,7 @@
+**Groceries** @green
+- [ ] bread
+- [x] milk
+	- [ ] oat milk
+- [ ] apples
+- [x] coffee beans
+#home #shopping

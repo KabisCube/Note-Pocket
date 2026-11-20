@@ -1,0 +1,8 @@
+Note Pocket is a small notes and checklist app with a terminal look.
+
+<ul>
+<li>Every note is a plain .txt file in a folder you pick, so any editor can open it.</li>
+<li>Checkboxes, bullets, nesting, *bold text*, title colors and tags.</li>
+<li>Send a note to another device on the same Wi-Fi. Changed notes can be compared line by line before saving.</li>
+<li>No accounts, no cloud, no tracking.</li>
+</ul>
