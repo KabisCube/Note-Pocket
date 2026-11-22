@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -91,6 +92,132 @@ void main() {
 		expect(find.text('[#work]'), findsOneWidget);
 		expect(find.text('Work'), findsOneWidget);
 		expect(find.text('Home'), findsNothing);
+		expect(tester.takeException(), isNull);
+
+		await tester.runAsync(() => folder.delete(recursive: true));
+	});
+
+	testWidgets('notes added to the folder outside the app appear when the app is back in front', (tester) async {
+		final folder = (await tester.runAsync(() => Directory.systemTemp.createTemp('note_pocket_resume')))!;
+		await tester.runAsync(() async {
+			await File('${folder.path}/Work.txt').writeAsString('Work\n[ ] report');
+			await tester.pumpWidget(MaterialApp(
+				home: NoteListScreen(
+					storage: NoteStorage(folder),
+					order: NoteOrder(File('${folder.parent.path}/note_pocket_resume_order.txt')),
+					settings: AppSettings(File('${folder.parent.path}/note_pocket_resume_settings.ini'), {}),
+					onNotesFolderChanged: (_) async {},
+					onThemeChanged: (_) async {},
+					onAccentColorChanged: (_) async {},
+				),
+			));
+			await Future.delayed(fileWaitTime);
+		});
+		await tester.pumpAndSettle();
+		expect(find.text('Work'), findsOneWidget);
+		expect(find.text('Pasted'), findsNothing);
+
+		await tester.runAsync(() => File('${folder.path}/Pasted.txt').writeAsString('Pasted\nfrom outside'));
+		tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+		await tester.runAsync(() async {
+			tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+			await Future.delayed(fileWaitTime);
+		});
+		await tester.pumpAndSettle();
+		expect(find.text('Work'), findsOneWidget);
+		expect(find.text('Pasted'), findsOneWidget);
+		expect(tester.takeException(), isNull);
+
+		await tester.runAsync(() => folder.delete(recursive: true));
+	});
+
+	testWidgets('+ starts a new note from the list, but not while editing or from another screen', (tester) async {
+		final folder = (await tester.runAsync(() => Directory.systemTemp.createTemp('note_pocket_plus')))!;
+		await tester.runAsync(() async {
+			await tester.pumpWidget(MaterialApp(
+				home: NoteListScreen(
+					storage: NoteStorage(folder),
+					order: NoteOrder(File('${folder.parent.path}/note_pocket_plus_order.txt')),
+					settings: AppSettings(File('${folder.parent.path}/note_pocket_plus_settings.ini'), {}),
+					onNotesFolderChanged: (_) async {},
+					onThemeChanged: (_) async {},
+					onAccentColorChanged: (_) async {},
+				),
+			));
+			await Future.delayed(fileWaitTime);
+		});
+		await tester.pumpAndSettle();
+		final editors = find.byType(NoteEditor, skipOffstage: false);
+		expect(editors, findsNothing);
+
+		// shift+= types + on US keyboards
+
+		await tester.sendKeyEvent(LogicalKeyboardKey.equal, character: '+');
+		await tester.pumpAndSettle();
+		expect(editors, findsOneWidget);
+		final firstEditor = tester.state(editors);
+
+		await tester.sendKeyEvent(LogicalKeyboardKey.numpadAdd);
+		await tester.pumpAndSettle();
+		expect(editors, findsOneWidget);
+		expect(tester.state(editors), same(firstEditor));
+
+		await tester.runAsync(() async {
+			await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+			await Future.delayed(fileWaitTime);
+		});
+		await tester.pumpAndSettle();
+		expect(editors, findsNothing);
+
+		await tester.tap(find.text(settingsLabel));
+		await tester.pumpAndSettle();
+		await tester.sendKeyEvent(LogicalKeyboardKey.equal, character: '+');
+		await tester.pumpAndSettle();
+		expect(editors, findsNothing);
+		expect(tester.takeException(), isNull);
+
+		await tester.runAsync(() => folder.delete(recursive: true));
+	});
+
+	testWidgets('a preview with more than fits ends in a row of just "..."', (tester) async {
+		final folder = (await tester.runAsync(() => Directory.systemTemp.createTemp('note_pocket_more')))!;
+		String lines(int count) => [for (var line = 1; line <= count; line++) 'line $line'].join('\n');
+		await tester.runAsync(() async {
+			await File('${folder.path}/Long.txt').writeAsString('Long\n${lines(20)}');
+			await File('${folder.path}/Exact.txt').writeAsString('Exact\n${lines(maxPreviewLines)}');
+			await File('${folder.path}/Short.txt').writeAsString('Short\n${lines(2)}');
+			await tester.pumpWidget(MaterialApp(
+				home: NoteListScreen(
+					storage: NoteStorage(folder),
+					order: NoteOrder(File('${folder.parent.path}/note_pocket_more_order.txt')),
+					settings: AppSettings(File('${folder.parent.path}/note_pocket_more_settings.ini'), {}),
+					onNotesFolderChanged: (_) async {},
+					onThemeChanged: (_) async {},
+					onAccentColorChanged: (_) async {},
+				),
+			));
+			await Future.delayed(fileWaitTime);
+		});
+		await tester.pumpAndSettle();
+
+		Finder inPreview(String title, Finder matching) {
+			// The nearest frame: the whole screen is in a frame too
+			final frame = find.ancestor(of: find.text(title), matching: find.byType(AsciiFrame)).first;
+			return find.descendant(of: frame, matching: matching);
+		}
+		final more = find.text(previewMoreText);
+		expect(more, findsOneWidget);
+		expect(inPreview('Long', more), findsOneWidget);
+		expect(inPreview('Exact', more), findsNothing);
+		expect(inPreview('Short', more), findsNothing);
+
+		RenderParagraph bodyOf(String title) {
+			final bodies = inPreview(title, find.byWidgetPredicate((widget) => widget is RichText && widget.maxLines != null));
+			return tester.renderObject<RenderParagraph>(bodies.last);
+		}
+		expect(bodyOf('Long').maxLines, maxPreviewLines - 1);
+		expect(bodyOf('Exact').maxLines, maxPreviewLines);
+		expect(bodyOf('Exact').didExceedMaxLines, isFalse);
 		expect(tester.takeException(), isNull);
 
 		await tester.runAsync(() => folder.delete(recursive: true));

@@ -18,7 +18,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       changelog: ${{ steps.version.outputs.changelog }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check that the tag matches pubspec.yaml
         id: version
@@ -47,9 +47,9 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
@@ -80,7 +80,7 @@ jobs:
         if: always()
         run: rm -f signing/release.jks signing/keystore.properties
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: android
           path: NotePocket-*-android.apk
@@ -89,7 +89,7 @@ jobs:
     needs: check
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: subosito/flutter-action@v2
         with:
@@ -102,7 +102,7 @@ jobs:
           flutter build windows --release
           Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath "NotePocket-${{ needs.check.outputs.version }}-windows.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: NotePocket-*-windows.zip
@@ -111,7 +111,7 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux build tools
         run: |
@@ -129,7 +129,7 @@ jobs:
           cp -r build/linux/x64/release/bundle NotePocket
           tar -czf "NotePocket-${{ needs.check.outputs.version }}-linux-x64.tar.gz" NotePocket
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: NotePocket-*-linux-x64.tar.gz
@@ -138,9 +138,9 @@ jobs:
     needs: [check, android, windows, linux]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release
           merge-multiple: true

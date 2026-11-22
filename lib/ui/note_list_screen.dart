@@ -17,6 +17,7 @@
 import 'dart:io';
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -43,6 +44,8 @@ const allTagsLabel = 'all';
 
 const listSpacing = 8.0;
 const maxPreviewLines = 8;
+// Shown as the last row of a preview when the note has more than fits
+const previewMoreText = '...';
 const scrollDuration = Duration(milliseconds: 300);
 const listCacheExtent = 100000.0;
 const swipeMinimumSpeed = 300.0;
@@ -115,14 +118,27 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
 	Map<String, String> get tagColors => widget.settings.tagColors;
 
+	// Reloads when the app comes back to the front, to pick up notes added to the folder outside the app
+	late final AppLifecycleListener lifecycleListener;
+
 	@override
 	void initState() {
 		super.initState();
+		lifecycleListener = AppLifecycleListener(onResume: _reload);
 		_reload();
 	}
 
 	Future<void> _reload() async {
-		final sortedNotes = await widget.order.sort(await widget.storage.loadAll());
+		final loadedNotes = await widget.storage.loadAll();
+		if (!mounted) return;
+		// The note being edited is newer in memory than on disk, and an autosave may have
+		// created or renamed its file while the folder was being read
+		final editedNote = notes.where((note) => note.file.path == editingPath).firstOrNull;
+		if (editedNote != null) {
+			loadedNotes.removeWhere((note) => note.file.path == editedNote.file.path || !note.file.existsSync());
+			loadedNotes.add(editedNote);
+		}
+		final sortedNotes = await widget.order.sort(loadedNotes);
 		if (!mounted) return;
 		setState(() {
 			notes = sortedNotes;
@@ -255,6 +271,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
 	@override
 	void dispose() {
+		lifecycleListener.dispose();
 		coveringScreenAnimation?.removeStatusListener(_handleCoveringScreenStatus);
 		listFocus.dispose();
 		newNoteFocus.dispose();
@@ -293,7 +310,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
 		return FocusManager.instance.primaryFocus?.context?.findAncestorStateOfType<EditableTextState>() != null;
 	}
 
-	KeyEventResult _handleArrowKeys(FocusNode node, KeyEvent event) {
+	KeyEventResult _handleKeys(FocusNode node, KeyEvent event) {
+		if (_isNewNoteKey(event)) return _newNoteFromKey();
 		final hasModifier = HardwareKeyboard.instance.isControlPressed
 			|| HardwareKeyboard.instance.isAltPressed
 			|| HardwareKeyboard.instance.isShiftPressed;
@@ -305,6 +323,27 @@ class _NoteListScreenState extends State<NoteListScreen> {
 			LogicalKeyboardKey.arrowLeft => _stepThroughTabs(-1),
 			_ => KeyEventResult.ignored,
 		};
+	}
+
+	// + is shift+= on some keyboards and its own key on others, so the typed character counts too
+	bool _isNewNoteKey(KeyEvent event) {
+		return event is KeyDownEvent && (event.character == '+'
+			|| event.logicalKey == LogicalKeyboardKey.add
+			|| event.logicalKey == LogicalKeyboardKey.numpadAdd);
+	}
+
+	// + starts a new note, but only from the plain list: not while a note is open or being typed in,
+	// and not with settings, a maximized note or a popup on top
+	KeyEventResult _newNoteFromKey() {
+		final isOverview = !_isTyping
+			&& editingPath == null
+			&& !isCreatingNote
+			&& (ModalRoute.of(context)?.isCurrent ?? true)
+			&& !HardwareKeyboard.instance.isControlPressed
+			&& !HardwareKeyboard.instance.isAltPressed;
+		if (!isOverview) return KeyEventResult.ignored;
+		_open(null);
+		return KeyEventResult.handled;
 	}
 
 	bool get _isHeaderFocused => receiveFocus.hasFocus || settingsFocus.hasFocus;
@@ -478,7 +517,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
 			focusNode: listFocus,
 			autofocus: true,
 			skipTraversal: true,
-			onKeyEvent: _handleArrowKeys,
+			onKeyEvent: _handleKeys,
 			child: _buildScaffold(visible, tags),
 		);
 	}
@@ -655,26 +694,7 @@ class _NotePreview extends StatelessWidget {
 						fallbackColor: accentColor == null ? terminalDimText : dulled(accentColor),
 						onPickColor: onPickTagColor,
 					),
-				child: LayoutBuilder(
-					builder: (context, constraints) {
-						final textStyle = DefaultTextStyle.of(context).style.copyWith(color: accentColor);
-						return Text.rich(
-							checklistSpan(
-								normalizeChecklists(note.body),
-								tabWidth: tabWidthFor(context, textStyle),
-								style: textStyle,
-								checkboxColor: accentColor ?? terminalAccent,
-								wrap: WrapSettings(
-									width: constraints.maxWidth - wrapSafetyMargin,
-									textStyle: textStyle,
-									textScaler: MediaQuery.textScalerOf(context),
-								),
-							),
-							maxLines: maxPreviewLines,
-							overflow: TextOverflow.ellipsis,
-						);
-					},
-				),
+				child: _PreviewBody(body: note.body, accentColor: accentColor),
 			),
 		);
 	}
@@ -693,6 +713,75 @@ class _NotePreview extends StatelessWidget {
 		return MouseRegion(
 			cursor: SystemMouseCursors.grab,
 			child: ReorderableDragStartListener(index: dragIndex, child: title),
+		);
+	}
+}
+
+// A note's text in the list. When it has more than fits, the last row is just "..." instead.
+// Whether it fits is only known once the text is laid out (checkboxes and indents are widgets
+// inside it), so it is checked after the first frame and rebuilt if needed. Both versions are
+// the same height, so the list doesn't move.
+class _PreviewBody extends StatefulWidget {
+	const _PreviewBody({required this.body, required this.accentColor});
+
+	final String body;
+	final Color? accentColor;
+
+	@override
+	State<_PreviewBody> createState() => _PreviewBodyState();
+}
+
+class _PreviewBodyState extends State<_PreviewBody> {
+	final paragraphKey = GlobalKey();
+	bool isCut = false;
+	double? laidOutWidth;
+
+	@override
+	void didUpdateWidget(_PreviewBody oldWidget) {
+		super.didUpdateWidget(oldWidget);
+		if (widget.body != oldWidget.body || widget.accentColor != oldWidget.accentColor) isCut = false;
+	}
+
+	void _checkOverflow() {
+		if (!mounted || isCut) return;
+		final paragraph = paragraphKey.currentContext?.findRenderObject();
+		if (paragraph is RenderParagraph && paragraph.didExceedMaxLines) setState(() => isCut = true);
+	}
+
+	@override
+	Widget build(BuildContext context) {
+		return LayoutBuilder(
+			builder: (context, constraints) {
+				if (constraints.maxWidth != laidOutWidth) {
+					laidOutWidth = constraints.maxWidth;
+					isCut = false;
+				}
+				if (!isCut) WidgetsBinding.instance.addPostFrameCallback((_) => _checkOverflow());
+
+				final textStyle = DefaultTextStyle.of(context).style.copyWith(color: widget.accentColor);
+				final text = Text.rich(
+					checklistSpan(
+						normalizeChecklists(widget.body),
+						tabWidth: tabWidthFor(context, textStyle),
+						style: textStyle,
+						checkboxColor: widget.accentColor ?? terminalAccent,
+						wrap: WrapSettings(
+							width: constraints.maxWidth - wrapSafetyMargin,
+							textStyle: textStyle,
+							textScaler: MediaQuery.textScalerOf(context),
+						),
+					),
+					key: paragraphKey,
+					maxLines: isCut ? maxPreviewLines - 1 : maxPreviewLines,
+					overflow: TextOverflow.clip,
+				);
+				if (!isCut) return text;
+				return Column(
+					crossAxisAlignment: CrossAxisAlignment.start,
+					mainAxisSize: MainAxisSize.min,
+					children: [text, Text(previewMoreText, style: textStyle)],
+				);
+			},
 		);
 	}
 }
