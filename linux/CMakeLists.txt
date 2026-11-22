@@ -69,6 +69,10 @@ install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}
 install(FILES "runner/resources/app_icon.png" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
 	COMPONENT Runtime)
 
+# Scripts that add the app to (and remove it from) the app menu, next to the program
+install(PROGRAMS "packaging/install.sh" "packaging/uninstall.sh" DESTINATION "${CMAKE_INSTALL_PREFIX}"
+	COMPONENT Runtime)
+
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
 	COMPONENT Runtime)
 

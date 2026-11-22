@@ -60,7 +60,7 @@ flutter test
 flutter run -d windows   # or linux, or an Android device
 ```
 
-On Windows, `run_windows.bat` and `run_android.bat` do the same. `run_android.bat` uses a JDK and Android SDK in `.tools/` if they are there.
+On Windows, `run_windows.bat` and `run_android.bat` do the same. On Linux, use `run_linux.sh` and `run_android.sh`. `run_android.bat` uses a JDK and Android SDK in `.tools/` if they are there.
 
 Release signing and publishing are described in [tools/README.md](tools/README.md).
 

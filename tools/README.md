@@ -6,7 +6,7 @@ Run **tools/Build Windows.bat** to build a release version into `dist/NotePocket
 
 ## Local Linux build
 
-Run **tools/Build Linux.sh** to build a release version into `dist/NotePocket-linux/`. Keep the files next to `note_pocket` when moving it. It needs `flutter` on your PATH plus `clang cmake ninja pkg-config gtk3`.
+Run **tools/Build Linux.sh** to build a release version into `dist/NotePocket-linux/`. Keep the files next to `note_pocket` when moving it. Run `install.sh` in that folder to add it to the app menu (the script comes from `linux/packaging/` and is copied into every Linux build). It needs `flutter` on your PATH plus `clang cmake ninja pkg-config gtk3`.
 
 To run the app while developing, use `run_linux.sh` or `run_android.sh` in the project root (the Linux versions of the `.bat` files). `run_android.sh` uses `adb` from your PATH or from `$ANDROID_HOME/platform-tools`.
 

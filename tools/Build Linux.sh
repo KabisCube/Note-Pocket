@@ -19,5 +19,6 @@ cp -r "$BUILD_FOLDER" "$OUTPUT_FOLDER"
 
 echo
 echo "Built $OUTPUT_FOLDER/note_pocket"
+echo "Run install.sh in that folder to add Note Pocket to the app menu."
 command -v xdg-open >/dev/null && xdg-open "$OUTPUT_FOLDER" >/dev/null 2>&1 &
 pause
