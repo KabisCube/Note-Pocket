@@ -1,0 +1,7 @@
+- keyboard shortcuts can now be viewed and edited in the settings.
+- auto saving as you write can now be turned off, and a new save catch is implemented for if you try to leave an unsaved note.
+- Reminders:
+	reminder: 13:50 fires a reminder at that time.
+	reminder: 2026-12-25 fires a reminder at that date.
+	reminder 2026-12-25 07:00 fires a reminder at that time on that date.
+reminders don't run in the background, so the app only remind you subtly when you have the app running.
