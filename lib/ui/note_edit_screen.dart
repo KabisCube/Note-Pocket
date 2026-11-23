@@ -18,6 +18,9 @@ class NoteEditScreen extends StatefulWidget {
 		this.onTagColorPicked,
 		this.onSaved,
 		this.onDeleted,
+		this.savesAutomatically = true,
+		this.initialContent,
+		this.revealText,
 	});
 
 	final NoteStorage storage;
@@ -28,6 +31,9 @@ class NoteEditScreen extends StatefulWidget {
 	final Future<void> Function(String tag, String? colorName)? onTagColorPicked;
 	final void Function(String? previousPath, Note savedNote)? onSaved;
 	final void Function(String? deletedPath)? onDeleted;
+	final bool savesAutomatically;
+	final String? initialContent;
+	final String? revealText;
 
 	@override
 	State<NoteEditScreen> createState() => _NoteEditScreenState();
@@ -36,9 +42,14 @@ class NoteEditScreen extends StatefulWidget {
 class _NoteEditScreenState extends State<NoteEditScreen> {
 	final editorKey = GlobalKey<NoteEditorState>();
 
+	bool isClosing = false;
+
 	Future<void> _close() async {
-		await editorKey.currentState?.flush();
-		if (mounted) Navigator.pop(context);
+		if (isClosing) return;
+		isClosing = true;
+		final canLeave = await editorKey.currentState?.confirmLeave() ?? true;
+		isClosing = false;
+		if (canLeave && mounted) Navigator.pop(context);
 	}
 
 	void _handleDeleted(String? deletedPath) {
@@ -65,6 +76,9 @@ class _NoteEditScreenState extends State<NoteEditScreen> {
 							tagColors: widget.tagColors,
 							knownTags: widget.knownTags,
 							onTagColorPicked: widget.onTagColorPicked,
+							savesAutomatically: widget.savesAutomatically,
+							initialContent: widget.initialContent,
+							revealText: widget.revealText,
 							fillsSpace: true,
 							onApply: _close,
 							onSaved: widget.onSaved,

@@ -1,13 +1,26 @@
+// Settings: theme, accent color, notes folder, saving, keyboard shortcuts and sync.
+// The notes folder can be typed, with Tab completing folder names like a terminal, or picked with
+// the system's folder picker.
+// A shortcut is changed by pressing [set] and then the new keys; Esc cancels. Keys already used by
+// another action are allowed, with a warning.
+
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../notes/note.dart';
 import '../notes/note_storage.dart';
 import '../notes/notes_folder.dart';
+import '../notes/path_completion.dart';
+import '../notes/tag_completion.dart';
 import 'ascii_widgets.dart';
+import 'checklist_controller.dart';
 import 'note_editor.dart';
 import 'send_screen.dart';
+import 'shortcuts.dart';
+import 'tags_view.dart';
 import 'terminal_theme.dart';
 
 const settingsTitle = 'SETTINGS';
@@ -15,17 +28,26 @@ const saveLabel = '[save]';
 const defaultLabel = '[use default]';
 const sendAllLabel = '[send all notes]';
 const openFolderLabel = '[open folder]';
+const browseLabel = '[browse]';
+const setShortcutLabel = '[set]';
+const cancelShortcutLabel = '[cancel]';
+const resetShortcutLabel = '[reset]';
+const recordingHint = 'press the new keys, esc to cancel';
+const autoSaveOption = 'as you type';
+const manualSaveOption = 'on ctrl+s';
 
 // The file manager command for showing a folder on each desktop system
 final fileManagerCommand = Platform.isWindows ? 'explorer' : (Platform.isMacOS ? 'open' : 'xdg-open');
 final canOpenFolder = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 const lineGap = 8.0;
+const shortcutKeysGap = 12.0;
 
 class SettingsScreen extends StatefulWidget {
 	const SettingsScreen({
 		super.key,
 		required this.currentFolder,
 		required this.storage,
+		required this.settings,
 		required this.onNotesFolderChanged,
 		required this.onThemeChanged,
 		required this.onAccentColorChanged,
@@ -33,6 +55,7 @@ class SettingsScreen extends StatefulWidget {
 
 	final String currentFolder;
 	final NoteStorage storage;
+	final AppSettings settings;
 	final Future<void> Function(String? folderPath) onNotesFolderChanged;
 	final Future<void> Function(String themeName) onThemeChanged;
 	final Future<void> Function(String colorName) onAccentColorChanged;
@@ -42,32 +65,106 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-	late final folderController = TextEditingController(text: widget.currentFolder);
+	late final folderController = TextEditingController(text: widget.currentFolder)..addListener(_handleFolderTyped);
+	final folderFocus = FocusNode();
+	final recordingFocus = FocusNode();
+	final pathStyle = PathStyle.current;
 	String? defaultFolder;
 	String? errorText;
+	// The folder whose subfolders are offered for completion, and their names once read
+	String? listedFolder;
+	List<String> listedFolderNames = const [];
+	ShortcutAction? recordingAction;
+	String? shortcutNotice;
 
 	@override
 	void initState() {
 		super.initState();
+		folderFocus.addListener(() => setState(() {}));
+		// Without a default folder (where the system can't say), the "default:" line is just left out
 		defaultNotesFolder().then((folder) {
 			if (mounted) setState(() => defaultFolder = folder);
-		});
+		}, onError: (Object _) {});
 	}
 
 	@override
 	void dispose() {
 		folderController.dispose();
+		folderFocus.dispose();
+		recordingFocus.dispose();
 		super.dispose();
 	}
 
+	String get typedFolder => expandHome(folderController.text.trim(), homeFolder, pathStyle);
+
 	Future<void> _save() async {
-		final folderPath = folderController.text.trim();
+		final folderPath = typedFolder;
 		final problem = await checkUsableFolder(folderPath);
 		if (problem != null) {
 			setState(() => errorText = "[!] can't use that folder: $problem");
 			return;
 		}
 		await _applyFolder(folderPath == defaultFolder ? null : folderPath);
+	}
+
+	Future<void> _browse() async {
+		final Uri? picked;
+		try {
+			final startFolder = typedFolder;
+			picked = await FilePicker.pickDirectory(
+				dialogTitle: 'notes folder',
+				initialDirectory: Directory(startFolder).existsSync() ? startFolder : null,
+			);
+		} on Object catch (error) {
+			if (mounted) setState(() => errorText = "[!] couldn't open the folder picker: $error");
+			return;
+		}
+		if (picked == null || !mounted) return;
+		final folderPath = folderPathFromUri(picked);
+		if (folderPath == null) {
+			setState(() => errorText = "[!] can't use that folder: pick one on the device's own storage");
+			return;
+		}
+		folderController.value = TextEditingValue(
+			text: folderPath,
+			selection: TextSelection.collapsed(offset: folderPath.length),
+		);
+		setState(() => errorText = null);
+	}
+
+	// Reads the folder being typed into, when it changes, so its subfolders can be offered
+	void _handleFolderTyped() {
+		final typed = splitTypedPath(folderController.text, pathStyle);
+		final folder = typed == null ? null : expandHome(typed.folder, homeFolder, pathStyle);
+		if (folder != listedFolder) {
+			listedFolder = folder;
+			listedFolderNames = const [];
+			if (folder != null) {
+				folderNamesIn(folder).then((names) {
+					if (mounted && listedFolder == folder) setState(() => listedFolderNames = names);
+				});
+			}
+		}
+		setState(() {});
+	}
+
+	TagCompletion get folderCompletion {
+		if (!folderFocus.hasFocus) return TagCompletion.none;
+		return completePath(folderController.value, listedFolderNames, pathStyle);
+	}
+
+	bool _acceptFolderCompletion() {
+		final completion = folderCompletion;
+		if (completion.isEmpty) return false;
+		folderController.value = acceptPathCompletion(folderController.value, completion, pathStyle);
+		folderFocus.requestFocus();
+		return true;
+	}
+
+	// Tab completes when there is something to complete, and otherwise moves on as usual
+	KeyEventResult _handleFolderKeys(FocusNode _, KeyEvent event) {
+		final isTab = event is! KeyUpEvent && completeShortcut.accepts(event, HardwareKeyboard.instance);
+		return isTab && _acceptFolderCompletion() ? KeyEventResult.handled : KeyEventResult.ignored;
 	}
 
 	Future<void> _sendAll() async {
@@ -96,14 +193,60 @@ class _SettingsScreenState extends State<SettingsScreen> {
 		if (mounted) Navigator.pop(context);
 	}
 
-	Widget _buildAccentOption(String colorName, String label, Color color) {
-		final isSelected = accentColorName == colorName;
+	Future<void> _pickSaveMode({required bool onlyOnRequest}) async {
+		await widget.settings.setSavesOnlyOnRequest(onlyOnRequest);
+		if (mounted) setState(() {});
+	}
+
+	void _toggleRecording(ShortcutAction action) {
+		setState(() {
+			shortcutNotice = null;
+			recordingAction = recordingAction == action ? null : action;
+		});
+		if (recordingAction != null) recordingFocus.requestFocus();
+	}
+
+	KeyEventResult _recordShortcut(FocusNode _, KeyEvent event) {
+		final action = recordingAction;
+		if (action == null) return KeyEventResult.ignored;
+		if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) {
+			setState(() => recordingAction = null);
+			return KeyEventResult.handled;
+		}
+		final activator = activatorFromEvent(event);
+		if (activator == null) return KeyEventResult.handled;
+
+		keyBindings.changed[action] = [activator];
+		widget.settings.setShortcut(action.name, encodeActivators([activator]));
+		final alsoUsedBy = keyBindings.actionsUsing(activator, except: action);
+		setState(() {
+			recordingAction = null;
+			shortcutNotice = alsoUsedBy.isEmpty
+				? null
+				: '[!] ${describeActivator(activator)} is also used to ${alsoUsedBy.map((used) => used.description).join(', ')}';
+		});
+		return KeyEventResult.handled;
+	}
+
+	void _resetShortcut(ShortcutAction action) {
+		keyBindings.changed.remove(action);
+		widget.settings.setShortcut(action.name, null);
+		setState(() {
+			shortcutNotice = null;
+			if (recordingAction == action) recordingAction = null;
+		});
+	}
+
+	Widget _buildOption(String label, {required bool isSelected, required VoidCallback onPressed, Color? color}) {
+		final shownColor = color ?? terminalAccent;
 		return TextButton(
-			onPressed: () => _pickAccentColor(colorName),
-			style: invertedFocusButtonStyle(isSelected ? color : dulled(color)),
+			onPressed: onPressed,
+			style: invertedFocusButtonStyle(isSelected ? shownColor : (color == null ? terminalDimText : dulled(color))),
 			child: Text(isSelected ? '[$label]' : ' $label '),
 		);
 	}
+
+	Widget _description(String text) => Text(text, style: TextStyle(color: terminalDimText));
 
 	@override
 	Widget build(BuildContext context) {
@@ -121,66 +264,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
 								actions: [
 									TextButton(onPressed: () => Navigator.pop(context), child: const Text(backLabel)),
 								],
-								child: ListView(
-									children: [
-										const Text('theme'),
-										Wrap(
-											children: [
-												for (final themeName in themeNames)
-													TextButton(
-														onPressed: () => _pickTheme(themeName),
-														style: invertedFocusButtonStyle(
-															themeName == chosenThemeName ? terminalAccent : terminalDimText,
-														),
-														child: Text(themeName == chosenThemeName ? '[$themeName]' : ' $themeName '),
-													),
-											],
-										),
-										const SizedBox(height: lineGap),
-										const Text('accent color'),
-										Wrap(
-											children: [
-												for (final colorName in titleColorNames)
-													_buildAccentOption(colorName, colorName, titleColors[colorName]!),
-											],
-										),
-										const SizedBox(height: lineGap),
-										const Text('notes folder'),
-										Text(
-											'every note is a .txt file in this folder. notes already there show up in the list.',
-											style: TextStyle(color: terminalDimText),
-										),
-										const SizedBox(height: lineGap),
-										TextField(
-											controller: folderController,
-											onSubmitted: (_) => _save(),
-											decoration: const InputDecoration.collapsed(hintText: 'folder path'),
-										),
-										if (defaultFolder != null)
-											Text('default: $defaultFolder', style: TextStyle(color: terminalDimText)),
-										if (errorText != null) ...[
+								child: Focus(
+									focusNode: recordingFocus,
+									skipTraversal: true,
+									onKeyEvent: _recordShortcut,
+									child: ListView(
+										children: [
+											..._buildLooks(),
 											const SizedBox(height: lineGap),
-											Text(errorText!),
-										],
-										const SizedBox(height: lineGap),
-										Row(
-											children: [
-												TextButton(onPressed: _save, child: const Text(saveLabel)),
-												TextButton(onPressed: () => _applyFolder(null), child: const Text(defaultLabel)),
-												if (canOpenFolder) TextButton(onPressed: _openFolder, child: const Text(openFolderLabel)),
+											..._buildFolder(),
+											const SizedBox(height: lineGap),
+											..._buildSaving(),
+											if (!isPhone) ...[
+												const SizedBox(height: lineGap),
+												..._buildShortcuts(),
 											],
-										),
-										const SizedBox(height: lineGap),
-										const Text('sync'),
-										Text(
-											'send every note to another device, one at a time. the other device reviews each one.',
-											style: TextStyle(color: terminalDimText),
-										),
-										Align(
-											alignment: Alignment.centerLeft,
-											child: TextButton(onPressed: _sendAll, child: const Text(sendAllLabel)),
-										),
-									],
+											const SizedBox(height: lineGap),
+											..._buildSync(),
+										],
+									),
 								),
 							),
 						),
@@ -188,5 +290,147 @@ class _SettingsScreenState extends State<SettingsScreen> {
 				),
 			),
 		);
+	}
+
+	List<Widget> _buildLooks() {
+		return [
+			const Text('theme'),
+			Wrap(
+				children: [
+					for (final themeName in themeNames)
+						_buildOption(themeName, isSelected: themeName == chosenThemeName, onPressed: () => _pickTheme(themeName)),
+				],
+			),
+			const SizedBox(height: lineGap),
+			const Text('accent color'),
+			Wrap(
+				children: [
+					for (final colorName in titleColorNames)
+						_buildOption(
+							colorName,
+							isSelected: accentColorName == colorName,
+							color: titleColors[colorName]!,
+							onPressed: () => _pickAccentColor(colorName),
+						),
+				],
+			),
+		];
+	}
+
+	List<Widget> _buildFolder() {
+		final completion = folderCompletion;
+		return [
+			const Text('notes folder'),
+			_description('every note is a .txt file in this folder. notes already there show up in the list. tab completes folder names.'),
+			const SizedBox(height: lineGap),
+			Row(
+				children: [
+					Flexible(
+						child: Focus(
+							canRequestFocus: false,
+							skipTraversal: true,
+							onKeyEvent: _handleFolderKeys,
+							child: IntrinsicWidth(
+								child: TextField(
+									controller: folderController,
+									focusNode: folderFocus,
+									onSubmitted: (_) => _save(),
+									decoration: const InputDecoration.collapsed(hintText: 'folder path'),
+								),
+							),
+						),
+					),
+					if (!completion.isEmpty)
+						TextFieldTapRegion(
+							child: GestureDetector(
+								onTap: _acceptFolderCompletion,
+								child: Transform.translate(
+									offset: const Offset(-textFieldCaretMargin, 0),
+									child: CompletionGhost(completion: completion),
+								),
+							),
+						),
+				],
+			),
+			if (defaultFolder != null) _description('default: $defaultFolder'),
+			if (errorText != null) ...[
+				const SizedBox(height: lineGap),
+				Text(errorText!),
+			],
+			const SizedBox(height: lineGap),
+			Wrap(
+				children: [
+					TextButton(onPressed: _save, child: const Text(saveLabel)),
+					TextButton(onPressed: _browse, child: const Text(browseLabel)),
+					TextButton(onPressed: () => _applyFolder(null), child: const Text(defaultLabel)),
+					if (canOpenFolder) TextButton(onPressed: _openFolder, child: const Text(openFolderLabel)),
+				],
+			),
+		];
+	}
+
+	List<Widget> _buildSaving() {
+		final onlyOnRequest = widget.settings.savesOnlyOnRequest;
+		return [
+			const Text('saving'),
+			_description(
+				'notes save as you type, or only with ${describeActivators(keyBindings.of(ShortcutAction.saveNote)).toLowerCase()} '
+				'or $saveNoteLabel. leaving a note with unsaved changes then asks first.',
+			),
+			Wrap(
+				children: [
+					_buildOption(autoSaveOption, isSelected: !onlyOnRequest, onPressed: () => _pickSaveMode(onlyOnRequest: false)),
+					_buildOption(manualSaveOption, isSelected: onlyOnRequest, onPressed: () => _pickSaveMode(onlyOnRequest: true)),
+				],
+			),
+		];
+	}
+
+	List<Widget> _buildShortcuts() {
+		return [
+			const Text('keyboard shortcuts'),
+			_description('arrows, enter and tab completion stay as they are.'),
+			const SizedBox(height: lineGap),
+			for (final action in ShortcutAction.values) _buildShortcutRow(action),
+			if (shortcutNotice != null) ...[
+				const SizedBox(height: lineGap),
+				Text(shortcutNotice!),
+			],
+		];
+	}
+
+	Widget _buildShortcutRow(ShortcutAction action) {
+		final isRecording = recordingAction == action;
+		return Row(
+			children: [
+				Expanded(child: Text(action.description)),
+				const SizedBox(width: shortcutKeysGap),
+				Text(
+					isRecording ? recordingHint : describeActivators(keyBindings.of(action)),
+					style: TextStyle(color: isRecording ? terminalAccent : terminalDimText),
+				),
+				const SizedBox(width: shortcutKeysGap),
+				TextButton(
+					onPressed: () => _toggleRecording(action),
+					child: Text(isRecording ? cancelShortcutLabel : setShortcutLabel),
+				),
+				if (keyBindings.isChanged(action))
+					TextButton(onPressed: () => _resetShortcut(action), child: const Text(resetShortcutLabel))
+				else
+					// Keeps the [set] buttons lined up
+					Opacity(opacity: 0, child: IgnorePointer(child: TextButton(onPressed: null, child: const Text(resetShortcutLabel)))),
+			],
+		);
+	}
+
+	List<Widget> _buildSync() {
+		return [
+			const Text('sync'),
+			_description('send every note to another device, one at a time. the other device reviews each one.'),
+			Align(
+				alignment: Alignment.centerLeft,
+				child: TextButton(onPressed: _sendAll, child: const Text(sendAllLabel)),
+			),
+		];
 	}
 }

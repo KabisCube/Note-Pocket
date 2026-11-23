@@ -50,7 +50,14 @@ class NoteStorage {
 		return Note(file: file, content: content, modified: DateTime.now());
 	}
 
-	Future<void> delete(Note note) => note.file.delete();
+	// A file that is already gone (removed outside the app) counts as deleted
+	Future<void> delete(Note note) async {
+		try {
+			await note.file.delete();
+		} on PathNotFoundException {
+			return;
+		}
+	}
 
 	Future<Note?> findSameNamed(String content) async {
 		final namedFile = _fileFor(fileNameForTitle(titleOf(content)));

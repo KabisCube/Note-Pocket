@@ -57,7 +57,7 @@ TagCompletion completeTag(TextEditingValue value, List<String> knownTags) {
 	if (matches.isEmpty) return TagCompletion.none;
 
 	final remainders = [for (final tag in matches) tag.substring(typed.length)];
-	final sharedPart = _sharedStart(remainders);
+	final sharedPart = sharedStart(remainders);
 	return TagCompletion(
 		sharedPart: sharedPart,
 		endings: [for (final remainder in remainders) remainder.substring(sharedPart.length)],
@@ -75,7 +75,7 @@ TextEditingValue acceptTagCompletion(TextEditingValue value, TagCompletion compl
 	return TextEditingValue(text: text, selection: TextSelection.collapsed(offset: text.length));
 }
 
-String _sharedStart(List<String> words) {
+String sharedStart(List<String> words) {
 	var shared = words.first;
 	for (final word in words.skip(1)) {
 		var length = 0;

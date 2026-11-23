@@ -6,6 +6,7 @@
 //   leaves the item and adds a plain line, which ends the list.
 // - Deleting into a list prefix removes the whole prefix.
 // - Typed or pasted "[] ", "[ ] " and space-indented list lines get normalized.
+// - With a checkbox's box selected, x or space toggles it instead of replacing it.
 
 import 'dart:math';
 
@@ -14,6 +15,8 @@ import 'package:flutter/services.dart';
 import 'note.dart';
 
 const checkboxBoxLength = 3;
+// Typed on a selected checkbox box, these toggle it
+const boxToggleCharacters = {'x', 'X', ' '};
 
 String normalizeChecklists(String text) => splitLines(text).map(normalizeLine).join(lineBreak);
 
@@ -46,13 +49,49 @@ int? checkboxLineStartAt(String text, int cursor) {
 	return isOnBox && cursor <= boxEnd ? lineStart : null;
 }
 
-int? cursorOutsidePrefix(String text, int cursor, int previousCursor) {
+// The "[ ]" of the checkbox on the line starting at lineStart, or null when that line has no checkbox.
+({int start, int end})? checkboxBoxAt(String text, int lineStart) {
+	final line = editorLineAt(text, lineStart);
+	if (!line.isCheckbox) return null;
+	final start = lineStart + noteSyntax.indentLength(line) + bulletPrefix.length;
+	return (start: start, end: start + checkboxBoxLength);
+}
+
+// The line start and box of a selection that covers exactly one checkbox's "[ ]", or null.
+({int lineStart, int start, int end})? selectedCheckboxBox(TextEditingValue value) {
+	final selection = value.selection;
+	if (!selection.isValid || selection.isCollapsed) return null;
+	final lineStart = lineAt(value.text, selection.start).start;
+	final box = checkboxBoxAt(value.text, lineStart);
+	if (box == null || selection.start != box.start || selection.end != box.end) return null;
+	return (lineStart: lineStart, start: box.start, end: box.end);
+}
+
+// Keeps a collapsed cursor out of list prefixes, so they act like a single symbol.
+// Left from the start of a checkbox item's text selects its box instead (typing x or space toggles it),
+// and Left again goes on to the end of the line above. Right from the box goes back to the text.
+// Returns the selection to use instead, or null to leave the cursor where it is.
+TextSelection? selectionOutsidePrefix(String text, int cursor, TextSelection previous, {bool isTap = false}) {
 	final lineStart = lineAt(text, cursor).start;
 	final line = editorLineAt(text, cursor);
 	final prefixEnd = lineStart + noteSyntax.prefixLength(line);
 	if (!line.isListItem || cursor >= prefixEnd) return null;
-	final isMovingLeftOutOfLine = previousCursor == prefixEnd && cursor == prefixEnd - 1 && lineStart > 0;
-	return isMovingLeftOutOfLine ? lineStart - 1 : prefixEnd;
+
+	final atTextStart = TextSelection.collapsed(offset: prefixEnd);
+	final lineAbove = lineStart > 0 ? TextSelection.collapsed(offset: lineStart - 1) : null;
+	if (isTap) return atTextStart;
+
+	final box = checkboxBoxAt(text, lineStart);
+	final boxSelection = box == null ? null : TextSelection(baseOffset: box.start, extentOffset: box.end);
+	final wasOnBox = box != null && previous.start == box.start && previous.end == box.end;
+	if (wasOnBox) {
+		final isMovingRight = cursor >= box.end;
+		return isMovingRight ? atTextStart : (lineAbove ?? boxSelection);
+	}
+
+	final isMovingLeft = previous.isCollapsed && previous.baseOffset == prefixEnd && cursor == prefixEnd - 1;
+	if (!isMovingLeft) return atTextStart;
+	return boxSelection ?? lineAbove ?? atTextStart;
 }
 
 String toggleCheckedAt(String text, int lineStart) {
@@ -76,6 +115,34 @@ TextEditingValue toggleCheckedLines(TextEditingValue value) {
 		for (final line in lines) line.isCheckbox ? noteSyntax.format(line.withType(newType)) : noteSyntax.format(line),
 	].join(lineBreak);
 	return value.copyWith(text: text.replaceRange(range.start, range.end, updatedBlock));
+}
+
+// Checks (or unchecks) every checkbox on the selected lines, as when one of them is clicked while
+// several lines are selected. Returns the new text and the starts of the lines that changed.
+// Checked and unchecked boxes are the same length, so line starts and the selection stay put.
+({String text, List<int> changedLineStarts}) setCheckedLines(String text, TextSelection selection, {required bool checked}) {
+	final range = _selectedLines(text, selection);
+	final wantedType = checked ? LineType.checked : LineType.unchecked;
+	final changedLineStarts = <int>[];
+	final updatedLines = <String>[];
+	var lineStart = range.start;
+	for (final rawLine in text.substring(range.start, range.end).split(lineBreak)) {
+		final line = noteSyntax.parse(rawLine);
+		if (line.isCheckbox && line.type != wantedType) {
+			changedLineStarts.add(lineStart);
+			updatedLines.add(noteSyntax.format(line.withType(wantedType)));
+		} else {
+			updatedLines.add(rawLine);
+		}
+		lineStart += rawLine.length + lineBreak.length;
+	}
+	return (text: text.replaceRange(range.start, range.end, updatedLines.join(lineBreak)), changedLineStarts: changedLineStarts);
+}
+
+// Whether the line starting at lineStart is one of the lines the selection touches.
+bool isLineSelected(String text, TextSelection selection, int lineStart) {
+	final range = _selectedLines(text, selection);
+	return lineStart >= range.start && lineStart <= range.end;
 }
 
 ({int start, int end}) _selectedLines(String text, TextSelection selection) {
@@ -201,9 +268,36 @@ TextEditingValue _valueWithCursor(String text, int cursor) {
 class ChecklistFormatter extends TextInputFormatter {
 	@override
 	TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
-		return _continueListOnEnter(oldValue, newValue)
+		return _typeOnSelectedBox(oldValue, newValue)
+			?? _continueListOnEnter(oldValue, newValue)
 			?? _removePrefixOnDelete(oldValue, newValue)
 			?? _convertTypedPrefixes(newValue);
+	}
+
+	// With a checkbox's box selected, typing never replaces the box:
+	// x or space toggles it, deleting removes the whole prefix, and anything else is typed at the start of the text.
+	// (On desktop, x and space are caught as keys before this, so the toggle can animate.)
+	TextEditingValue? _typeOnSelectedBox(TextEditingValue oldValue, TextEditingValue newValue) {
+		final box = selectedCheckboxBox(oldValue);
+		if (box == null || newValue.text == oldValue.text) return null;
+		final oldText = oldValue.text;
+		final before = oldText.substring(0, box.start);
+		final after = oldText.substring(box.end);
+		final newText = newValue.text;
+		if (newText.length < before.length + after.length || !newText.startsWith(before) || !newText.endsWith(after)) return null;
+
+		final typed = newText.substring(before.length, newText.length - after.length);
+		final line = editorLineAt(oldText, box.lineStart);
+		final prefixEnd = box.lineStart + noteSyntax.prefixLength(line);
+		if (boxToggleCharacters.contains(typed)) {
+			return TextEditingValue(
+				text: toggleCheckedAt(oldText, box.lineStart),
+				selection: TextSelection(baseOffset: box.start, extentOffset: box.end),
+			);
+		}
+		if (typed.isEmpty) return _valueWithCursor(oldText.replaceRange(box.lineStart, prefixEnd, ''), box.lineStart);
+		if (typed.contains(lineBreak)) return _valueWithCursor(oldText, prefixEnd);
+		return _valueWithCursor(oldText.replaceRange(prefixEnd, prefixEnd, typed), prefixEnd + typed.length);
 	}
 
 	TextEditingValue? _continueListOnEnter(TextEditingValue oldValue, TextEditingValue newValue) {

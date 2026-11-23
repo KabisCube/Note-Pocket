@@ -13,6 +13,12 @@
 // Arrows typed in a text field are left alone.
 // While editing, the list is updated from the editor's save callbacks instead of
 // being reloaded, so notes don't jump around under the cursor.
+// Leaving the note being edited (Esc, another note, a tag tab, a screen on top) first lets the editor
+// save, or ask, when notes are only saved on request. If it says to stay, nothing else happens.
+// Reminders in the notes are checked every little while and shown as a popup, which can open the note
+// at the reminder's line, closing any screen on top first.
+
+import 'dart:async';
 
 import 'dart:io';
 
@@ -26,12 +32,14 @@ import '../notes/note.dart';
 import '../notes/note_order.dart';
 import '../notes/note_storage.dart';
 import '../notes/notes_folder.dart';
+import '../notes/reminders.dart';
 import 'ascii_widgets.dart';
 import 'checklist_controller.dart';
 import 'note_edit_screen.dart';
 import 'note_editor.dart';
 import 'receive_screen.dart';
 import 'settings_screen.dart';
+import 'shortcuts.dart';
 import 'tags_view.dart';
 import 'terminal_theme.dart';
 
@@ -52,6 +60,12 @@ const swipeMinimumSpeed = 300.0;
 const swipeMaximumTime = Duration(milliseconds: 400);
 const swipeMinimumSidewaysRatio = 2.0;
 const focusScrollDuration = Duration(milliseconds: 150);
+const reminderCheckInterval = Duration(seconds: 15);
+const reminderTitle = '[!] reminder';
+// Reminders are outlined in red so they stand out, whatever the note's color
+const alertColorName = 'red';
+const reminderOkLabel = '[ok]';
+const reminderOpenLabel = '[open note]';
 
 final opensNotesFullScreen = Platform.isAndroid || Platform.isIOS;
 
@@ -64,9 +78,12 @@ class NoteListScreen extends StatefulWidget {
 		required this.onNotesFolderChanged,
 		required this.onThemeChanged,
 		required this.onAccentColorChanged,
+		this.reminderLog,
 	});
 
 	final NoteStorage storage;
+	// Null leaves reminders off
+	final ReminderLog? reminderLog;
 	final NoteOrder order;
 	final AppSettings settings;
 	final Future<void> Function(String? folderPath) onNotesFolderChanged;
@@ -82,6 +99,13 @@ class _NoteListScreenState extends State<NoteListScreen> {
 	String? editingPath;
 	bool isCreatingNote = false;
 	GlobalKey<NoteEditorState> editorKey = GlobalKey();
+	// The text whose line the note being opened inline starts at, like a reminder's line
+	String? revealText;
+	Timer? reminderTimer;
+	final dueReminders = <Reminder>[];
+	bool isShowingReminder = false;
+	// A reminder's note to open once the screen on top of the list has closed
+	({String path, String revealText})? pendingOpen;
 	String? selectedTag;
 	String? scrollTargetPath;
 	// Bumped when coming back from another screen, so the title types itself out again
@@ -125,8 +149,11 @@ class _NoteListScreenState extends State<NoteListScreen> {
 	void initState() {
 		super.initState();
 		lifecycleListener = AppLifecycleListener(onResume: _reload);
+		if (widget.reminderLog != null) reminderTimer = Timer.periodic(reminderCheckInterval, (_) => _checkReminders());
 		_reload();
 	}
+
+	bool get savesAutomatically => !widget.settings.savesOnlyOnRequest;
 
 	Future<void> _reload() async {
 		final loadedNotes = await widget.storage.loadAll();
@@ -145,30 +172,38 @@ class _NoteListScreenState extends State<NoteListScreen> {
 			if (!allTags.contains(selectedTag)) selectedTag = null;
 		});
 		_saveOrder();
+		_checkReminders();
 	}
 
 	void _saveOrder() => widget.order.save(notes);
 
-	Future<void> _stopEditing() async {
-		await editorKey.currentState?.flush();
-		if (!mounted) return;
+	// Closes the note being edited inline, letting it save (or ask) first.
+	// Returns false when it stays open, and the caller should then not go on.
+	Future<bool> _stopEditing({bool asks = true}) async {
+		final editor = editorKey.currentState;
+		if (editor != null && asks && !await editor.confirmLeave()) return false;
+		if (!mounted) return false;
 		setState(() {
 			editingPath = null;
 			isCreatingNote = false;
+			revealText = null;
 			editorKey = GlobalKey();
 		});
+		return true;
 	}
 
-	Future<void> _editInline(Note? note) async {
-		await _stopEditing();
+	Future<void> _editInline(Note? note, {String? reveal}) async {
+		if (!await _stopEditing() || !mounted) return;
 		setState(() {
 			editingPath = note?.file.path;
 			isCreatingNote = note == null;
+			revealText = reveal;
 		});
+		if (note != null && reveal != null) _scrollTo(note.file.path);
 	}
 
 	Future<void> _selectTag(String? tag) async {
-		await _stopEditing();
+		if (!await _stopEditing() || !mounted) return;
 		setState(() => selectedTag = tag);
 	}
 
@@ -232,31 +267,32 @@ class _NoteListScreenState extends State<NoteListScreen> {
 	}
 
 	Future<void> _openReceive() async {
-		await _stopEditing();
-		if (!mounted) return;
+		if (!await _stopEditing() || !mounted) return;
 		final receivedPath = await Navigator.push<String>(
 			context,
 			MaterialPageRoute(builder: (_) => ReceiveScreen(storage: widget.storage)),
 		);
 		await _reload();
 		if (receivedPath != null) _scrollTo(receivedPath);
+		_openPendingReminder();
 	}
 
 	Future<void> _openSettings() async {
-		await _stopEditing();
-		if (!mounted) return;
+		if (!await _stopEditing() || !mounted) return;
 		await Navigator.push(
 			context,
 			MaterialPageRoute(
 				builder: (_) => SettingsScreen(
 					currentFolder: widget.storage.folder.path,
 					storage: widget.storage,
+					settings: widget.settings,
 					onNotesFolderChanged: widget.onNotesFolderChanged,
 					onThemeChanged: widget.onThemeChanged,
 					onAccentColorChanged: widget.onAccentColorChanged,
 				),
 			),
 		);
+		_openPendingReminder();
 	}
 
 	// Restarts the title the moment a screen on top of this one starts closing, so it never
@@ -272,6 +308,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
 	@override
 	void dispose() {
 		lifecycleListener.dispose();
+		reminderTimer?.cancel();
 		coveringScreenAnimation?.removeStatusListener(_handleCoveringScreenStatus);
 		listFocus.dispose();
 		newNoteFocus.dispose();
@@ -312,6 +349,12 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
 	KeyEventResult _handleKeys(FocusNode node, KeyEvent event) {
 		if (_isNewNoteKey(event)) return _newNoteFromKey();
+		// The note being edited closes with its shortcut even when the focus has wandered out of it
+		final isEditing = editingPath != null || isCreatingNote;
+		if (event is KeyDownEvent && isEditing && keyBindings.matches(ShortcutAction.closeNote, event)) {
+			_closeEditor();
+			return KeyEventResult.handled;
+		}
 		final hasModifier = HardwareKeyboard.instance.isControlPressed
 			|| HardwareKeyboard.instance.isAltPressed
 			|| HardwareKeyboard.instance.isShiftPressed;
@@ -325,11 +368,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
 		};
 	}
 
-	// + is shift+= on some keyboards and its own key on others, so the typed character counts too
 	bool _isNewNoteKey(KeyEvent event) {
-		return event is KeyDownEvent && (event.character == '+'
-			|| event.logicalKey == LogicalKeyboardKey.add
-			|| event.logicalKey == LogicalKeyboardKey.numpadAdd);
+		return event is KeyDownEvent && keyBindings.matches(ShortcutAction.newNote, event);
 	}
 
 	// + starts a new note, but only from the plain list: not while a note is open or being typed in,
@@ -399,7 +439,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
 	Future<void> _closeEditor() async {
 		final closedPath = editingPath;
-		await _stopEditing();
+		if (!await _stopEditing() || !mounted) return;
 		_focusNoteAfterBuild(closedPath);
 	}
 
@@ -425,9 +465,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
 		});
 	}
 
-	Future<void> _openFullScreen(Note? note) async {
-		await _stopEditing();
-		if (!mounted) return;
+	// draft is unsaved text carried over from the note being edited inline, which then isn't asked about
+	Future<void> _openFullScreen(Note? note, {String? draft, String? reveal, bool asks = true}) async {
+		if (!await _stopEditing(asks: asks) || !mounted) return;
 		var editedPath = note?.file.path;
 		await Navigator.push(
 			context,
@@ -439,6 +479,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
 					tagColors: tagColors,
 					knownTags: allTags,
 					onTagColorPicked: _setTagColor,
+					savesAutomatically: savesAutomatically,
+					initialContent: draft,
+					revealText: reveal,
 					onSaved: (previousPath, savedNote) {
 						editedPath = savedNote.file.path;
 						_handleSaved(previousPath, savedNote);
@@ -454,19 +497,87 @@ class _NoteListScreenState extends State<NoteListScreen> {
 		final scrollPath = editedPath;
 		if (scrollPath != null) _scrollTo(scrollPath);
 		_focusNoteAfterBuild(scrollPath);
+		_openPendingReminder();
 	}
 
+	// The note moves to the full-screen editor as it is: saved first when saving automatically,
+	// otherwise with its unsaved changes carried along.
 	Future<void> _maximizeEditing() async {
-		await editorKey.currentState?.flush();
-		final editingNote = notes.where((note) => note.file.path == editingPath).firstOrNull;
-		await _openFullScreen(editingNote);
+		final editor = editorKey.currentState;
+		if (editor == null) return;
+		if (savesAutomatically) {
+			if (!await editor.flush()) return;
+			await _openFullScreen(editor.note, asks: false);
+			return;
+		}
+		final draft = editor.hasUnsavedChanges ? editor.content : null;
+		await _openFullScreen(editor.note, draft: draft, asks: false);
 	}
 
-	void _open(Note? note) {
-		opensNotesFullScreen ? _openFullScreen(note) : _editInline(note);
+	void _open(Note? note, {String? reveal}) {
+		opensNotesFullScreen ? _openFullScreen(note, reveal: reveal) : _editInline(note, reveal: reveal);
+	}
+
+	void _checkReminders() {
+		final log = widget.reminderLog;
+		if (log == null || !mounted) return;
+		dueReminders.addAll(log.takeDue(notes, DateTime.now()));
+		_showNextReminder();
+	}
+
+	// One popup at a time; ones that come due meanwhile wait their turn
+	Future<void> _showNextReminder() async {
+		if (isShowingReminder || dueReminders.isEmpty || !mounted) return;
+		isShowingReminder = true;
+		final reminder = dueReminders.removeAt(0);
+		final note = notes.where((note) => note.file.path == reminder.notePath).firstOrNull;
+		// Drawn in the note's own color, with its title like at the top of the note
+		final noteColor = titleColors[note?.titleColor];
+		final wantsNote = await showChoiceDialog<bool>(
+			context: context,
+			title: reminderTitle,
+			accentColor: noteColor,
+			outlineColor: titleColorFor(alertColorName),
+			body: Column(
+				crossAxisAlignment: CrossAxisAlignment.start,
+				mainAxisSize: MainAxisSize.min,
+				children: [
+					Text(note?.title ?? untitledName, style: titleStyle.copyWith(color: titleColorFor(note?.titleColor))),
+					Text(reminder.lineText, style: TextStyle(color: noteColor)),
+				],
+			),
+			choices: [
+				(label: reminderOkLabel, key: LogicalKeyboardKey.escape, value: false),
+				(label: reminderOpenLabel, key: LogicalKeyboardKey.keyO, value: true),
+			],
+		);
+		isShowingReminder = false;
+		if (wantsNote == true && note != null && mounted) await _openReminderNote(note, reminder.lineText);
+		_showNextReminder();
+	}
+
+	// With another screen on top, that screen is closed the usual way first (a note there may ask to save),
+	// and the note opens once the list is back.
+	Future<void> _openReminderNote(Note note, String lineText) async {
+		final isListOnTop = ModalRoute.of(context)?.isCurrent ?? true;
+		if (isListOnTop) {
+			_open(note, reveal: lineText);
+			return;
+		}
+		pendingOpen = (path: note.file.path, revealText: lineText);
+		await Navigator.of(context).maybePop();
+	}
+
+	void _openPendingReminder() {
+		final pending = pendingOpen;
+		pendingOpen = null;
+		if (pending == null || !mounted) return;
+		final note = notes.where((note) => note.file.path == pending.path).firstOrNull;
+		if (note != null) _open(note, reveal: pending.revealText);
 	}
 
 	void _handleSaved(String? previousPath, Note savedNote) {
+		if (previousPath != null) widget.reminderLog?.renameNote(previousPath, savedNote.file.path);
 		setState(() {
 			final index = notes.indexWhere((note) => note.file.path == previousPath);
 			if (index == -1) {
@@ -641,6 +752,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
 			tagColors: tagColors,
 			knownTags: allTags,
 			onTagColorPicked: _setTagColor,
+			savesAutomatically: savesAutomatically,
+			revealText: revealText,
 			fillsSpace: false,
 			onApply: _closeEditor,
 			onSaved: _handleSaved,
@@ -652,7 +765,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
 	}
 }
 
-class _NotePreview extends StatelessWidget {
+// Hovering a note with the mouse inverts its title, the same as keyboard focus does.
+class _NotePreview extends StatefulWidget {
 	const _NotePreview({
 		required this.note,
 		required this.focusNode,
@@ -672,13 +786,25 @@ class _NotePreview extends StatelessWidget {
 	final VoidCallback? onMaximize;
 
 	@override
+	State<_NotePreview> createState() => _NotePreviewState();
+}
+
+class _NotePreviewState extends State<_NotePreview> {
+	bool isHovered = false;
+
+	@override
 	Widget build(BuildContext context) {
+		final note = widget.note;
+		final onMaximize = widget.onMaximize;
 		final accentColor = titleColors[note.titleColor];
 		final tags = note.tags;
 
 		return InkWell(
-			focusNode: focusNode,
-			onTap: onTap,
+			focusNode: widget.focusNode,
+			onTap: widget.onTap,
+			onHover: (hovered) {
+				if (hovered != isHovered) setState(() => isHovered = hovered);
+			},
 			child: AsciiFrame(
 				accentColor: accentColor,
 				label: _buildTitle(),
@@ -690,9 +816,9 @@ class _NotePreview extends StatelessWidget {
 					? null
 					: TagsRow(
 						tags: tags,
-						tagColors: tagColors,
+						tagColors: widget.tagColors,
 						fallbackColor: accentColor == null ? terminalDimText : dulled(accentColor),
-						onPickColor: onPickTagColor,
+						onPickColor: widget.onPickTagColor,
 					),
 				child: _PreviewBody(body: note.body, accentColor: accentColor),
 			),
@@ -701,9 +827,10 @@ class _NotePreview extends StatelessWidget {
 
 	Widget _buildTitle() {
 		final title = InvertedWhenFocused(
-			color: titleColorFor(note.titleColor),
+			color: titleColorFor(widget.note.titleColor),
+			isHighlighted: isHovered,
 			builder: (textColor) => Text(
-				note.title,
+				widget.note.title,
 				style: titleStyle.copyWith(color: textColor),
 				maxLines: 1,
 				overflow: TextOverflow.ellipsis,
@@ -712,7 +839,7 @@ class _NotePreview extends StatelessWidget {
 		if (opensNotesFullScreen) return title;
 		return MouseRegion(
 			cursor: SystemMouseCursors.grab,
-			child: ReorderableDragStartListener(index: dragIndex, child: title),
+			child: ReorderableDragStartListener(index: widget.dragIndex, child: title),
 		);
 	}
 }
@@ -764,7 +891,7 @@ class _PreviewBodyState extends State<_PreviewBody> {
 						normalizeChecklists(widget.body),
 						tabWidth: tabWidthFor(context, textStyle),
 						style: textStyle,
-						checkboxColor: widget.accentColor ?? terminalAccent,
+						checkboxColor: widget.accentColor,
 						wrap: WrapSettings(
 							width: constraints.maxWidth - wrapSafetyMargin,
 							textStyle: textStyle,

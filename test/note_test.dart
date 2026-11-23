@@ -157,9 +157,43 @@ void main() {
 		});
 
 		test('cursor is kept out of the checkbox prefix', () {
-			expect(cursorOutsidePrefix('- [ ] milk', 1, 0), 6);
-			expect(cursorOutsidePrefix('a\n- [ ] milk', 7, 8), 1);
-			expect(cursorOutsidePrefix('- [ ] milk', 8, 7), null);
+			const nowhere = TextSelection.collapsed(offset: 0);
+			expect(selectionOutsidePrefix('- [ ] milk', 1, nowhere), const TextSelection.collapsed(offset: 6));
+			expect(selectionOutsidePrefix('- [ ] milk', 8, const TextSelection.collapsed(offset: 7)), null);
+			expect(selectionOutsidePrefix('a\n- milk', 3, const TextSelection.collapsed(offset: 4)), const TextSelection.collapsed(offset: 1));
+		});
+
+		test('left from the text selects the box, then goes on to the line above', () {
+			const text = 'a\n- [ ] milk';
+			const box = TextSelection(baseOffset: 4, extentOffset: 7);
+			expect(selectionOutsidePrefix(text, 7, const TextSelection.collapsed(offset: 8)), box);
+			expect(selectionOutsidePrefix(text, 4, box), const TextSelection.collapsed(offset: 1));
+			expect(selectionOutsidePrefix(text, 7, box), const TextSelection.collapsed(offset: 8));
+			expect(selectionOutsidePrefix(text, 7, const TextSelection.collapsed(offset: 8), isTap: true), const TextSelection.collapsed(offset: 8));
+		});
+
+		test('typing on a selected box toggles it or types into the text', () {
+			const box = TextEditingValue(text: '- [ ] milk', selection: TextSelection(baseOffset: 2, extentOffset: 5));
+			// What the text field sends: the selected "[ ]" replaced by what was typed
+			TextEditingValue typed(String character) => ChecklistFormatter().formatEditUpdate(
+				box,
+				TextEditingValue(
+					text: box.text.replaceRange(2, 5, character),
+					selection: TextSelection.collapsed(offset: 2 + character.length),
+				),
+			);
+			expect(typed('x').text, '- [x] milk');
+			expect(typed('x').selection, box.selection);
+			expect(typed(' ').text, '- [x] milk');
+			expect(typed('o').text, '- [ ] omilk');
+			expect(typed('').text, 'milk');
+		});
+
+		test('clicking a box in a selection sets every selected box the same way', () {
+			const text = '- [ ] a\nnote\n- [x] b\n- [ ] c';
+			final updated = setCheckedLines(text, const TextSelection(baseOffset: 0, extentOffset: 17), checked: true);
+			expect(updated.text, '- [x] a\nnote\n- [x] b\n- [ ] c');
+			expect(updated.changedLineStarts, [0]);
 		});
 
 		test('toggling checks and unchecks', () {

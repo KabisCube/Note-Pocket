@@ -5,8 +5,10 @@ import 'package:material_ui/material_ui.dart';
 import 'notes/note_order.dart';
 import 'notes/note_storage.dart';
 import 'notes/notes_folder.dart';
+import 'notes/reminders.dart';
 import 'ui/font_size_control.dart';
 import 'ui/note_list_screen.dart';
+import 'ui/shortcuts.dart';
 import 'ui/storage_access_screen.dart';
 import 'ui/terminal_theme.dart';
 
@@ -17,15 +19,18 @@ Future<void> main() async {
 	final settings = await AppSettings.load();
 	applyThemeName(settings.theme);
 	accentColorName = settings.accentColor ?? defaultAccentColorName;
+	keyBindings = KeyBindings.fromSaved(settings.shortcuts);
 	final order = await NoteOrder.openDefault();
-	runApp(NotePocketApp(settings: settings, order: order));
+	final reminderLog = await ReminderLog.openDefault();
+	runApp(NotePocketApp(settings: settings, order: order, reminderLog: reminderLog));
 }
 
 class NotePocketApp extends StatefulWidget {
-	const NotePocketApp({super.key, required this.settings, required this.order});
+	const NotePocketApp({super.key, required this.settings, required this.order, this.reminderLog});
 
 	final AppSettings settings;
 	final NoteOrder order;
+	final ReminderLog? reminderLog;
 
 	@override
 	State<NotePocketApp> createState() => _NotePocketAppState();
@@ -126,6 +131,7 @@ class _NotePocketAppState extends State<NotePocketApp> with WidgetsBindingObserv
 				storage: openedStorage,
 				order: widget.order,
 				settings: widget.settings,
+				reminderLog: widget.reminderLog,
 				onNotesFolderChanged: _changeNotesFolder,
 				onThemeChanged: _changeTheme,
 				onAccentColorChanged: _changeAccentColor,

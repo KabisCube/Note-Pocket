@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'terminal_theme.dart';
@@ -276,17 +277,19 @@ class AsciiFrame extends StatelessWidget {
 
 // Shows keyboard focus the terminal way, with text and background swapped, for labels inside a
 // focusable widget like a menu button or a note. It follows the nearest focusable widget above it.
+// isHighlighted inverts it too, like for a note under the mouse.
 class InvertedWhenFocused extends StatelessWidget {
-	const InvertedWhenFocused({super.key, required this.color, required this.builder});
+	const InvertedWhenFocused({super.key, required this.color, required this.builder, this.isHighlighted = false});
 
 	final Color color;
 	final Widget Function(Color textColor) builder;
+	final bool isHighlighted;
 
 	@override
 	Widget build(BuildContext context) {
 		final hasFocus = Focus.maybeOf(context)?.hasPrimaryFocus ?? false;
 		final isUsingKeyboard = FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
-		final isInverted = hasFocus && isUsingKeyboard;
+		final isInverted = isHighlighted || (hasFocus && isUsingKeyboard);
 		return ColoredBox(
 			color: isInverted ? color : Colors.transparent,
 			child: builder(isInverted ? terminalBackground : color),
@@ -352,4 +355,75 @@ class _NewNoteButtonState extends State<NewNoteButton> {
 			),
 		);
 	}
+}
+
+// A popup drawn like a note: a frame with the title set into its top border and the [choice] buttons
+// set into its bottom border, in accentColor (the app's accent color when null).
+// Around the frame is an even gap and a thin outline in outlineColor, like a note's border, so it stands
+// out from the screen behind it without darkening it.
+// Each choice can have a key that picks it, like Y or N. The focused choice (the last one unless
+// focusedChoice says otherwise) is picked with Enter. Esc closes it with null, unless a choice uses Esc.
+const choiceDialogMaxWidth = 460.0;
+const choiceDialogInset = EdgeInsets.all(24);
+// The gap between the outline and the frame's line. The title and button rows already reach half a row
+// past the line, so the padding above and below is that much less.
+const choiceDialogGapSize = 20.0;
+const choiceDialogGap = EdgeInsets.symmetric(
+	horizontal: choiceDialogGapSize,
+	vertical: choiceDialogGapSize - frameLabelRowHeight / 2,
+);
+
+Future<T?> showChoiceDialog<T>({
+	required BuildContext context,
+	required String title,
+	String? message,
+	Widget? body,
+	Color? accentColor,
+	Color? outlineColor,
+	int? focusedChoice,
+	required List<({String label, LogicalKeyboardKey? key, T? value})> choices,
+}) {
+	final focusedIndex = focusedChoice ?? choices.length - 1;
+	return showDialog<T>(
+		context: context,
+		barrierColor: Colors.transparent,
+		// Only the popup's own buttons (or their keys, or Esc) answer it; clicks outside do nothing
+		barrierDismissible: false,
+		builder: (dialogContext) => CallbackShortcuts(
+			bindings: {
+				for (final choice in choices)
+					if (choice.key case final key?) SingleActivator(key): () => Navigator.pop(dialogContext, choice.value),
+			},
+			child: Dialog(
+				backgroundColor: terminalBackground,
+				surfaceTintColor: Colors.transparent,
+				shape: RoundedRectangleBorder(side: BorderSide(color: outlineColor ?? accentColor ?? terminalDimText)),
+				elevation: 0,
+				insetPadding: choiceDialogInset,
+				child: ConstrainedBox(
+					constraints: const BoxConstraints(maxWidth: choiceDialogMaxWidth),
+					child: Padding(
+						padding: choiceDialogGap,
+						child: AsciiFrame(
+							accentColor: accentColor,
+							label: TypewriterText(
+								title,
+								style: screenTitleStyle.copyWith(color: accentColor ?? terminalText),
+								showCursor: false,
+							),
+							bottomActions: [
+								for (final (index, choice) in choices.indexed)
+									TextButton(
+										autofocus: index == focusedIndex,
+										onPressed: () => Navigator.pop(dialogContext, choice.value),
+										child: Text(choice.label),
+									),
+							],
+							child: body ?? Text(message ?? ''),
+						),
+					),
+				),
+			),
+		),
+	);
 }

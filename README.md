@@ -20,28 +20,17 @@ Each note is a .txt file and uses Markdown to make it compatible with as many ot
 - [x] milk
 	- [ ] oat milk
 - **ask** about *coffee*
+- [ ] pick up the cake reminder: 2026-12-24 15:30
 #home #shopping
 ```
 
 - **First line:** the title, always bold, with an optional color: `@green` `@yellow` `@orange` `@red` `@pink` `@purple` `@blue` `@cyan`
 - `- [ ] ` and `- [x] ` are checkboxes, `- ` is a bullet, tabs nest them. Typing `[] ` or `[ ] ` makes a checkbox.
 - `**text**` is bold, `*text*` is italic, as in Markdown
-- **Last line:** tags like `#home`. Typing `#home@green` in the tags field applies the green color to the tag; `@green` is then removed from the tag and the color is kept locally by the app, not in the note.
+- **Reminders:** `reminder: 2026-12-24 15:30` pops up at that time, `reminder: 2026-12-24` at 09:00 that day, and `reminder: 15:30` at the next 15:30. `reminder 15:30` and `reminder=15:30` work too. Reminders show while the app is open; ones that came due while it was closed show the next time it starts.
+- **Tags** like `#home` or `#work`. Typing `#home@green` in the tags field applies the green color to the tag; `@green` is then removed from the tag and the color is kept locally by the app, not in the note.
 
-The app keeps its own order and settings outside the notes folder, so the notes stay clean.
 
-## Keyboard
-
-| Key | In the note list | In a note |
-| --- | --- | --- |
-| Up / Down | move between [recv] [settings], tabs, new note and notes | move the cursor; past the first or last line, go to the title or tags |
-| Left / Right | switch tag tab, or between [recv] and [settings] | move the cursor; Right at the end of the title goes to the buttons beside it |
-| Enter | open the focused note | new line, continues lists; on a button, open its menu |
-| Esc | | close the menu or the note |
-| Shift+F10 or Menu key | | open the [...] menu |
-| Ctrl+Enter or Ctrl+L | | check or uncheck the checkboxes on the selected lines |
-| Tab / Shift+Tab | | indent / outdent |
-| Ctrl+Up / Ctrl+Down | | move lines up / down |
 
 ## Syncing notes
 

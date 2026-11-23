@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
@@ -11,6 +12,7 @@ import '../notes/tag_completion.dart';
 import 'ascii_widgets.dart';
 import 'checklist_controller.dart';
 import 'send_screen.dart';
+import 'shortcuts.dart';
 import 'tags_view.dart';
 import 'terminal_theme.dart';
 
@@ -19,21 +21,15 @@ const colorTagDelay = Duration(seconds: 1);
 const titlePickerGap = 6.0;
 const titleStyle = boldTextStyle;
 
-// Shortcuts
+// Fixed keys; the rest are in shortcuts.dart and can be changed in settings
+// Esc leaves screens like settings, while closing a note uses its own changeable shortcut
 const closeShortcut = SingleActivator(LogicalKeyboardKey.escape);
-const toggleCheckboxShortcut = SingleActivator(LogicalKeyboardKey.enter, control: true);
-// The same shortcut as in Obsidian
-const toggleCheckboxAlternativeShortcut = SingleActivator(LogicalKeyboardKey.keyL, control: true);
-// The usual Windows keys for opening a menu
-const openMenuShortcut = SingleActivator(LogicalKeyboardKey.f10, shift: true);
-const openMenuKeyShortcut = SingleActivator(LogicalKeyboardKey.contextMenu);
-const indentShortcut = SingleActivator(LogicalKeyboardKey.tab);
-const outdentShortcut = SingleActivator(LogicalKeyboardKey.tab, shift: true);
 const completeShortcut = SingleActivator(LogicalKeyboardKey.tab);
-const moveUpShortcut = SingleActivator(LogicalKeyboardKey.arrowUp, control: true);
-const moveDownShortcut = SingleActivator(LogicalKeyboardKey.arrowDown, control: true);
 
 // Labels
+const saveNoteLabel = '[save]';
+const unsavedMark = '*';
+const saveErrorLabel = '[!]';
 const deleteLabel = '[del]';
 const sendLabel = '[send]';
 const moreLabel = '[...]';
@@ -54,6 +50,21 @@ const colorSwatch = '■';
 const noColorName = 'none';
 const noTooltip = '';
 
+// A note's text split into what the editor's fields show
+({String title, String? color, String body, List<String> tags}) parseEditorContent(String content) {
+	final parts = splitTitle(content);
+	final title = parseTitle(parts.title);
+	final bodyParts = splitTags(normalizeChecklists(parts.body));
+	return (title: title.text, color: title.color, body: bodyParts.body, tags: bodyParts.tags);
+}
+
+// A note's text as the editor would save it, which can differ from the file in small ways
+// (older title forms, space indents), so opening a note never counts as a change by itself.
+String editorFormOf(String content) {
+	final parts = parseEditorContent(content);
+	return joinTitle(formatTitle(parts.title, parts.color), joinTags(parts.body, parts.tags));
+}
+
 class NoteEditor extends StatefulWidget {
 	const NoteEditor({
 		super.key,
@@ -68,10 +79,19 @@ class NoteEditor extends StatefulWidget {
 		this.tagColors = const {},
 		this.knownTags = const [],
 		this.onTagColorPicked,
+		this.savesAutomatically = true,
+		this.initialContent,
+		this.revealText,
 	});
 
 	final NoteStorage storage;
 	final Note? note;
+	// Off when notes are only saved with the save shortcut; leaving with changes then asks first
+	final bool savesAutomatically;
+	// Unsaved text to start from instead of the note's file, like when a note being edited is maximized
+	final String? initialContent;
+	// The cursor starts at the end of the line with this text, like a reminder's line
+	final String? revealText;
 	final bool fillsSpace;
 	final VoidCallback onApply;
 	final void Function(String? previousPath, Note savedNote)? onSaved;
@@ -101,7 +121,14 @@ class NoteEditorState extends State<NoteEditor> {
 	late bool isShowingTags;
 	Timer? autosaveTimer;
 	Timer? colorTagTimer;
+	// Saves run one after another. Each one catches its own errors, so a failed save never blocks the next.
 	Future<void> saveQueue = Future.value();
+	// What the file holds, in the editor's own form, to tell whether there are unsaved changes
+	late String lastSavedContent;
+	bool isShowingUnsaved = false;
+	// Why the last save failed, until one succeeds
+	String? saveError;
+	late final AppLifecycleListener exitListener;
 	String? titleColor;
 	// Starts as the colors passed in, and follows colors picked here (a full-screen editor isn't rebuilt by the list)
 	late Map<String, String> tagColors = {...widget.tagColors};
@@ -126,19 +153,23 @@ class NoteEditorState extends State<NoteEditor> {
 		super.initState();
 		note = widget.note;
 		isNewNote = note == null;
-		final parts = splitTitle(note?.content ?? '');
-		final title = parseTitle(parts.title);
-		titleColor = title.color;
-		isTypingTitle = !isNewNote && title.text.trim().isNotEmpty;
-		titleController = TextEditingController(text: title.text)
+		final draft = widget.initialContent;
+		final parts = parseEditorContent(draft ?? note?.content ?? '');
+		titleColor = parts.color;
+		isTypingTitle = !isNewNote && parts.title.trim().isNotEmpty;
+		titleController = TextEditingController(text: parts.title)
 			..addListener(_scheduleAutosave)
 			..addListener(_handleTitleChange);
-		final bodyParts = splitTags(normalizeChecklists(parts.body));
-		bodyController = ChecklistController(text: bodyParts.body)..addListener(_scheduleAutosave);
-		final tags = note == null ? widget.initialTags : bodyParts.tags;
+		bodyController = ChecklistController(text: parts.body)..addListener(_scheduleAutosave);
+		final tags = note == null && draft == null ? widget.initialTags : parts.tags;
+		lastSavedContent = note == null
+			? contentWith(tags)
+			: (draft == null ? contentWith(tags) : editorFormOf(note!.content));
+		exitListener = AppLifecycleListener(onExitRequested: _handleExitRequest);
 		tagsController = TagsController(text: formatTags(tags))
 			..addListener(_scheduleAutosave)
 			..addListener(() => setState(() {}));
+		isShowingUnsaved = hasUnsavedChanges;
 		isShowingTags = tags.isNotEmpty;
 		titleFocus.addListener(() {
 			if (!titleFocus.hasFocus) _applyTypedColorTag();
@@ -164,12 +195,22 @@ class NoteEditorState extends State<NoteEditor> {
 			titleFocus.requestFocus();
 			return;
 		}
-		bodyController.selection = TextSelection.collapsed(offset: bodyController.text.length);
+		bodyController.selection = TextSelection.collapsed(offset: _revealOffset() ?? bodyController.text.length);
 		bodyFocus.requestFocus();
+	}
+
+	// The end of the first line holding revealText, if the body has one
+	int? _revealOffset() {
+		final reveal = widget.revealText;
+		if (reveal == null || reveal.isEmpty) return null;
+		final text = bodyController.text;
+		final index = text.indexOf(reveal);
+		return index == -1 ? null : lineAt(text, index).end;
 	}
 
 	@override
 	void dispose() {
+		exitListener.dispose();
 		autosaveTimer?.cancel();
 		colorTagTimer?.cancel();
 		titleController.dispose();
@@ -223,6 +264,16 @@ class NoteEditorState extends State<NoteEditor> {
 	bool get _isPlainArrow {
 		final keyboard = HardwareKeyboard.instance;
 		return !keyboard.isShiftPressed && !keyboard.isControlPressed && !keyboard.isAltPressed && !keyboard.isMetaPressed;
+	}
+
+	// With a checkbox's box selected, x or space toggles it (caught here, before it is typed, so it animates)
+	KeyEventResult _handleBodyKeys(FocusNode node, KeyEvent event) {
+		final keyboard = HardwareKeyboard.instance;
+		final isPlainCharacter = !keyboard.isControlPressed && !keyboard.isAltPressed && !keyboard.isMetaPressed;
+		if (event is KeyDownEvent && isPlainCharacter && boxToggleCharacters.contains(event.character)) {
+			if (bodyController.toggleSelectedBox()) return KeyEventResult.handled;
+		}
+		return _handleBodyArrows(node, event);
 	}
 
 	KeyEventResult _handleBodyArrows(FocusNode _, KeyEvent event) {
@@ -282,60 +333,193 @@ class NoteEditorState extends State<NoteEditor> {
 		tagsFocus.requestFocus();
 	}
 
-	Future<void> flush() {
+	bool get hasUnsavedChanges => content != lastSavedContent;
+
+	// Saves now, with whatever tags are typed. Returns whether it worked.
+	Future<bool> save() {
 		autosaveTimer?.cancel();
 		_applyTypedTagColors();
-		return _queueSave(deleteIfEmpty: true);
+		return _queueSave(deleteIfEmpty: false, withTypedTags: true);
+	}
+
+	// Saves any changes before the note closes; a note left empty is deleted. Returns whether it worked.
+	Future<bool> flush() {
+		autosaveTimer?.cancel();
+		_applyTypedTagColors();
+		return _queueSave(deleteIfEmpty: true, withTypedTags: true);
+	}
+
+	// Called before the note closes. Saves (or asks first, when saving only on request), and
+	// returns false when the note should stay open: the person chose to keep editing, or saving failed
+	// and they don't want to lose the changes.
+	Future<bool> confirmLeave() async {
+		autosaveTimer?.cancel();
+		// Nothing changed: nothing to write, so a new note left untouched isn't created either
+		if (!hasUnsavedChanges) return true;
+		final focusBefore = FocusManager.instance.primaryFocus;
+		if (!widget.savesAutomatically) {
+			final choice = await _askToSave();
+			if (choice == null) return _stayAndRefocus(focusBefore);
+			if (choice == _SaveChoice.discard) return true;
+		}
+		while (true) {
+			if (await flush()) return true;
+			if (!mounted) return true;
+			final choice = await _askAfterSaveError();
+			if (choice == null || choice == _SaveErrorChoice.keepEditing) return _stayAndRefocus(focusBefore);
+			if (choice == _SaveErrorChoice.closeAnyway) return true;
+		}
+	}
+
+	// Staying in the note puts the cursor back where it was (in the body when it was outside the note,
+	// like on another note that was clicked), so typing goes on in the note instead of in the list.
+	// The closing popup hands the focus back by itself at the end of the frame, so this waits for that.
+	Future<bool> _stayAndRefocus(FocusNode? focusBefore) async {
+		await WidgetsBinding.instance.endOfFrame;
+		if (!mounted) return false;
+		final wasInNote = focusBefore?.context?.findAncestorStateOfType<NoteEditorState>() == this;
+		(wasInNote ? focusBefore! : bodyFocus).requestFocus();
+		return false;
+	}
+
+	Future<AppExitResponse> _handleExitRequest() async {
+		return await confirmLeave() ? AppExitResponse.exit : AppExitResponse.cancel;
 	}
 
 	void _scheduleAutosave() {
+		_updateUnsavedMark();
+		if (!widget.savesAutomatically) return;
 		autosaveTimer?.cancel();
-		autosaveTimer = Timer(autosaveDelay, () => _queueSave(deleteIfEmpty: false));
+		autosaveTimer = Timer(autosaveDelay, () => _queueSave(deleteIfEmpty: false, withTypedTags: false));
 	}
 
-	Future<void> _queueSave({required bool deleteIfEmpty}) {
-		return saveQueue = saveQueue.then((_) => _writeNote(deleteIfEmpty: deleteIfEmpty));
+	void _updateUnsavedMark() {
+		if (widget.savesAutomatically || !mounted) return;
+		final isUnsaved = hasUnsavedChanges;
+		if (isUnsaved != isShowingUnsaved) setState(() => isShowingUnsaved = isUnsaved);
 	}
 
-	Future<void> _writeNote({required bool deleteIfEmpty}) async {
-		final currentContent = deleteIfEmpty ? content : autosaveContent;
+	Future<bool> _queueSave({required bool deleteIfEmpty, required bool withTypedTags}) {
+		final result = saveQueue
+			.then((_) => _writeNote(deleteIfEmpty: deleteIfEmpty, withTypedTags: withTypedTags))
+			.then((_) {
+				_showSaveError(null);
+				return true;
+			}, onError: (Object error) {
+				_showSaveError(describeSaveError(error));
+				return false;
+			});
+		saveQueue = result;
+		return result;
+	}
+
+	void _showSaveError(String? error) {
+		if (error == saveError) return;
+		saveError = error;
+		if (mounted) setState(() {});
+	}
+
+	Future<void> _writeNote({required bool deleteIfEmpty, required bool withTypedTags}) async {
+		final currentContent = withTypedTags ? content : autosaveContent;
 		final previousPath = note?.file.path;
 
 		if (currentContent.trim().isEmpty) {
 			if (!deleteIfEmpty || note == null) return;
 			await widget.storage.delete(note!);
 			note = null;
+			lastSavedContent = currentContent;
 			widget.onDeleted?.call(previousPath);
 			return;
 		}
-		if (currentContent == note?.content) return;
+		if (currentContent == note?.content) {
+			_markSaved(currentContent);
+			return;
+		}
 
 		final savedNote = await widget.storage.save(note, currentContent);
 		note = savedNote;
+		_markSaved(currentContent);
 		widget.onSaved?.call(previousPath, savedNote);
 	}
 
+	void _markSaved(String savedContent) {
+		lastSavedContent = savedContent;
+		_updateUnsavedMark();
+	}
+
+	Future<_SaveChoice?> _askToSave() {
+		return showChoiceDialog<_SaveChoice>(
+			context: context,
+			title: 'save changes? [y/n]',
+			message: titleController.text.trim().isEmpty ? untitledName : titleController.text.trim(),
+			accentColor: noteColor,
+			choices: [
+				(label: '[cancel]', key: LogicalKeyboardKey.escape, value: null),
+				(label: '[n]', key: LogicalKeyboardKey.keyN, value: _SaveChoice.discard),
+				(label: '[y]', key: LogicalKeyboardKey.keyY, value: _SaveChoice.save),
+			],
+		);
+	}
+
+	Future<_SaveErrorChoice?> _askAfterSaveError() {
+		return showChoiceDialog<_SaveErrorChoice>(
+			context: context,
+			title: "[!] couldn't save this note",
+			message: '$saveError\n\n[discard] closes it and loses the changes.',
+			accentColor: titleColorFor(deleteColorName),
+			outlineColor: titleColorFor(deleteColorName),
+			choices: [
+				(label: '[edit]', key: LogicalKeyboardKey.escape, value: _SaveErrorChoice.keepEditing),
+				(label: '[discard]', key: null, value: _SaveErrorChoice.closeAnyway),
+				(label: '[retry]', key: LogicalKeyboardKey.keyR, value: _SaveErrorChoice.retry),
+			],
+		);
+	}
+
+	void _showSaveErrorDetails() {
+		showChoiceDialog<void>(
+			context: context,
+			title: "[!] couldn't save this note",
+			message: '${saveError ?? ''}\n\nit is tried again with the next change.',
+			accentColor: titleColorFor(deleteColorName),
+			outlineColor: titleColorFor(deleteColorName),
+			choices: [(label: '[ok]', key: LogicalKeyboardKey.escape, value: null)],
+		);
+	}
+
 	Future<void> _openSend() async {
-		await flush();
-		final savedNote = note;
-		if (savedNote == null || !mounted) return;
+		final String sentContent;
+		if (widget.savesAutomatically) {
+			if (!await flush()) return;
+			final savedNote = note;
+			if (savedNote == null) return;
+			sentContent = savedNote.content;
+		} else {
+			// The note is sent as it is in the editor, saved or not
+			sentContent = content;
+			if (sentContent.trim().isEmpty) return;
+		}
+		if (!mounted) return;
 		final wasSent = await Navigator.push<bool>(
 			context,
-			MaterialPageRoute(builder: (_) => SendScreen(contents: [savedNote.content])),
+			MaterialPageRoute(builder: (_) => SendScreen(contents: [sentContent])),
 		);
 		if (wasSent == true) widget.onApply();
 	}
 
 	Future<void> _delete() async {
-		final confirmed = await showDialog<bool>(
+		// Enter keeps the note: the focus starts on [n]
+		final confirmed = await showChoiceDialog<bool>(
 			context: context,
-			builder: (dialogContext) => AlertDialog(
-				title: const Text('rm note? [y/n]'),
-				actions: [
-					TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('[n]')),
-					TextButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('[y]')),
-				],
-			),
+			title: 'rm note? [y/n]',
+			message: titleController.text.trim().isEmpty ? untitledName : titleController.text.trim(),
+			accentColor: titleColorFor(deleteColorName),
+			outlineColor: titleColorFor(deleteColorName),
+			focusedChoice: 0,
+			choices: [
+				(label: '[n]', key: LogicalKeyboardKey.keyN, value: false),
+				(label: '[y]', key: LogicalKeyboardKey.keyY, value: true),
+			],
 		);
 		if (confirmed != true) return;
 
@@ -372,18 +556,18 @@ class NoteEditorState extends State<NoteEditor> {
 	@override
 	Widget build(BuildContext context) {
 		final accentColor = titleColors[shownTitleColor];
-		bodyController.checkboxColor = accentColor ?? terminalAccent;
+		bodyController.checkboxColor = accentColor;
 		tagsController
 			..tagColors = tagColors
 			..fallbackColor = accentColor == null ? terminalDimText : dulled(accentColor);
 		final body = _buildBodyField();
 
 		return CallbackShortcuts(
-			bindings: {
-				closeShortcut: widget.onApply,
-				openMenuShortcut: _openMoreMenu,
-				openMenuKeyShortcut: _openMoreMenu,
-			},
+			bindings: keyBindings.callbacks({
+				ShortcutAction.closeNote: widget.onApply,
+				ShortcutAction.openMenu: _openMoreMenu,
+				ShortcutAction.saveNote: save,
+			}),
 			child: AsciiFrame(
 				fillsSpace: widget.fillsSpace,
 				padsContentSides: false,
@@ -405,9 +589,18 @@ class NoteEditorState extends State<NoteEditor> {
 						),
 						const SizedBox(width: titlePickerGap),
 						_buildColorPicker(),
+						// In the title's own color, so it is easy to spot
+						if (isShowingUnsaved) Text(unsavedMark, style: TextStyle(color: titleColorFor(shownTitleColor))),
+						if (saveError != null)
+							TextButton(
+								onPressed: _showSaveErrorDetails,
+								style: invertedFocusButtonStyle(titleColorFor(deleteColorName)),
+								child: const Text(saveErrorLabel),
+							),
 					],
 				),
 				actions: [
+					if (!widget.savesAutomatically) TextButton(onPressed: save, child: const Text(saveNoteLabel)),
 					_buildMoreMenu(accentColor ?? terminalAccent),
 					...widget.extraActions,
 				],
@@ -599,20 +792,19 @@ class NoteEditorState extends State<NoteEditor> {
 
 	Widget _buildBodyField() {
 		return CallbackShortcuts(
-			bindings: {
-				indentShortcut: () => _changeIndent(1),
-				outdentShortcut: () => _changeIndent(-1),
-				moveUpShortcut: () => _moveLines(-1),
-				moveDownShortcut: () => _moveLines(1),
-				toggleCheckboxShortcut: bodyController.toggleSelectedCheckboxes,
-				toggleCheckboxAlternativeShortcut: bodyController.toggleSelectedCheckboxes,
-			},
+			bindings: keyBindings.callbacks({
+				ShortcutAction.indent: () => _changeIndent(1),
+				ShortcutAction.outdent: () => _changeIndent(-1),
+				ShortcutAction.moveLinesUp: () => _moveLines(-1),
+				ShortcutAction.moveLinesDown: () => _moveLines(1),
+				ShortcutAction.toggleCheckbox: bodyController.toggleSelectedCheckboxes,
+			}),
 			child: Focus(
 				canRequestFocus: false,
 				skipTraversal: true,
-				onKeyEvent: _handleBodyArrows,
+				onKeyEvent: _handleBodyKeys,
 				child: Listener(
-					onPointerDown: (_) => bodyController.isTapPending = true,
+					onPointerDown: (_) => bodyController.startTap(),
 					child: LayoutBuilder(
 						builder: (_, constraints) {
 							bodyController.wrapWidth = constraints.maxWidth - frameSidePadding * 2;
@@ -643,3 +835,16 @@ class NoteEditorState extends State<NoteEditor> {
 	}
 }
 
+
+enum _SaveChoice { save, discard }
+
+enum _SaveErrorChoice { keepEditing, closeAnyway, retry }
+
+// A short reason for a failed save, like "Permission denied (/home/me/Notes/Groceries.txt)"
+String describeSaveError(Object error) {
+	if (error is FileSystemException) {
+		final reason = error.osError?.message ?? error.message;
+		return error.path == null ? reason : '$reason (${error.path})';
+	}
+	return '$error';
+}

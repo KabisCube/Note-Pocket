@@ -25,7 +25,10 @@ const tagColorKeyPrefix = 'tag_color.';
 const themeKey = 'theme';
 const accentColorKey = 'accent_color';
 const fontSizeChangeKey = 'font_size_change';
+const saveModeKey = 'save_mode';
+const shortcutKeyPrefix = 'shortcut.';
 const trueValue = 'true';
+const manualSaveValue = 'manual';
 
 class AppSettings {
 	AppSettings(this.file, this._values);
@@ -69,10 +72,22 @@ class AppSettings {
 
 	Future<void> setFontSizeChange(int change) => _set(fontSizeChangeKey, '$change');
 
-	Map<String, String> get tagColors {
+	// Notes are saved automatically unless set to save only with the save shortcut
+	bool get savesOnlyOnRequest => _values[saveModeKey] == manualSaveValue;
+
+	Future<void> setSavesOnlyOnRequest(bool onlyOnRequest) => _set(saveModeKey, onlyOnRequest ? manualSaveValue : null);
+
+	// Changed keyboard shortcuts in their saved form, by action name
+	Map<String, String> get shortcuts => _valuesStartingWith(shortcutKeyPrefix);
+
+	Future<void> setShortcut(String actionName, String? keys) => _set('$shortcutKeyPrefix$actionName', keys);
+
+	Map<String, String> get tagColors => _valuesStartingWith(tagColorKeyPrefix);
+
+	Map<String, String> _valuesStartingWith(String prefix) {
 		return {
 			for (final entry in _values.entries)
-				if (entry.key.startsWith(tagColorKeyPrefix)) entry.key.substring(tagColorKeyPrefix.length): entry.value,
+				if (entry.key.startsWith(prefix)) entry.key.substring(prefix.length): entry.value,
 		};
 	}
 
@@ -131,4 +146,26 @@ Future<String?> checkUsableFolder(String folderPath) async {
 	} on FileSystemException catch (error) {
 		return error.osError?.message ?? error.message;
 	}
+}
+
+// A folder picked in the system's folder picker, as a path. Android gives a content:// address for
+// folders on the phone's storage; those are turned back into paths, which the app can use with storage access.
+// Null for folders that have no path, like ones in cloud storage apps.
+const androidStorageProvider = 'com.android.externalstorage.documents';
+const androidPrimaryStorage = 'primary';
+const androidPrimaryStoragePath = '/storage/emulated/0';
+
+String? folderPathFromUri(Uri uri) {
+	if (uri.scheme == 'file') return uri.toFilePath();
+	if (uri.scheme.isEmpty) return uri.path;
+	if (uri.scheme != 'content' || uri.host != androidStorageProvider) return null;
+	final treeIndex = uri.pathSegments.indexOf('tree');
+	if (treeIndex == -1 || treeIndex + 1 >= uri.pathSegments.length) return null;
+	final documentId = uri.pathSegments[treeIndex + 1];
+	final separatorIndex = documentId.indexOf(':');
+	if (separatorIndex == -1) return null;
+	final volume = documentId.substring(0, separatorIndex);
+	final volumePath = volume == androidPrimaryStorage ? androidPrimaryStoragePath : '/storage/$volume';
+	final folder = documentId.substring(separatorIndex + 1);
+	return folder.isEmpty ? volumePath : p.posix.join(volumePath, folder);
 }
