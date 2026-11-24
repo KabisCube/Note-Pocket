@@ -17,6 +17,8 @@ enum ShortcutAction {
 		// The same shortcut as in Obsidian
 		SingleActivator(LogicalKeyboardKey.keyL, control: true),
 	]),
+	bold('bold', [SingleActivator(LogicalKeyboardKey.keyB, control: true)]),
+	italic('italic', [SingleActivator(LogicalKeyboardKey.keyI, control: true)]),
 	// The usual Windows keys for opening a menu
 	openMenu('open the [...] menu', [
 		SingleActivator(LogicalKeyboardKey.f10, shift: true),

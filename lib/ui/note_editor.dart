@@ -6,11 +6,13 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../notes/checklist_editing.dart';
+import '../notes/emphasis_editing.dart';
 import '../notes/note.dart';
 import '../notes/note_storage.dart';
 import '../notes/tag_completion.dart';
 import 'ascii_widgets.dart';
 import 'checklist_controller.dart';
+import 'inverted_selection.dart';
 import 'send_screen.dart';
 import 'shortcuts.dart';
 import 'tags_view.dart';
@@ -108,7 +110,7 @@ class NoteEditor extends StatefulWidget {
 
 class NoteEditorState extends State<NoteEditor> {
 	Note? note;
-	late final TextEditingController titleController;
+	late final InvertedSelectionController titleController;
 	late final ChecklistController bodyController;
 	late final TagsController tagsController;
 	late final bool isNewNote;
@@ -157,16 +159,20 @@ class NoteEditorState extends State<NoteEditor> {
 		final parts = parseEditorContent(draft ?? note?.content ?? '');
 		titleColor = parts.color;
 		isTypingTitle = !isNewNote && parts.title.trim().isNotEmpty;
-		titleController = TextEditingController(text: parts.title)
+		titleController = InvertedSelectionController(text: parts.title)
+			..focusNode = titleFocus
 			..addListener(_scheduleAutosave)
 			..addListener(_handleTitleChange);
-		bodyController = ChecklistController(text: parts.body)..addListener(_scheduleAutosave);
+		bodyController = ChecklistController(text: parts.body)
+			..focusNode = bodyFocus
+			..addListener(_scheduleAutosave);
 		final tags = note == null && draft == null ? widget.initialTags : parts.tags;
 		lastSavedContent = note == null
 			? contentWith(tags)
 			: (draft == null ? contentWith(tags) : editorFormOf(note!.content));
 		exitListener = AppLifecycleListener(onExitRequested: _handleExitRequest);
 		tagsController = TagsController(text: formatTags(tags))
+			..focusNode = tagsFocus
 			..addListener(_scheduleAutosave)
 			..addListener(() => setState(() {}));
 		isShowingUnsaved = hasUnsavedChanges;
@@ -548,6 +554,10 @@ class NoteEditorState extends State<NoteEditor> {
 		bodyController.value = moveLines(bodyController.value, direction);
 	}
 
+	void _toggleEmphasis(String mark) {
+		bodyController.value = toggleEmphasis(bodyController.value, mark);
+	}
+
 	void _fromButton(VoidCallback edit) {
 		edit();
 		bodyFocus.requestFocus();
@@ -568,52 +578,63 @@ class NoteEditorState extends State<NoteEditor> {
 				ShortcutAction.openMenu: _openMoreMenu,
 				ShortcutAction.saveNote: save,
 			}),
-			child: AsciiFrame(
-				fillsSpace: widget.fillsSpace,
-				padsContentSides: false,
-				accentColor: accentColor,
-				label: Row(
-					mainAxisSize: MainAxisSize.min,
-					children: [
-						Flexible(
-							child: isTypingTitle
-								? TypewriterText(
-									titleController.text,
-									style: _titleTextStyle(),
-									showCursor: false,
-									onFinished: () {
-										if (mounted) setState(() => isTypingTitle = false);
-									},
-								)
-								: IntrinsicWidth(child: _buildTitleField()),
-						),
-						const SizedBox(width: titlePickerGap),
-						_buildColorPicker(),
-						// In the title's own color, so it is easy to spot
-						if (isShowingUnsaved) Text(unsavedMark, style: TextStyle(color: titleColorFor(shownTitleColor))),
-						if (saveError != null)
-							TextButton(
-								onPressed: _showSaveErrorDetails,
-								style: invertedFocusButtonStyle(titleColorFor(deleteColorName)),
-								child: const Text(saveErrorLabel),
+			child: TextSelectionTheme(
+				data: TextSelectionTheme.of(context).copyWith(selectionColor: noteColor ?? terminalText),
+				child: AsciiFrame(
+					fillsSpace: widget.fillsSpace,
+					padsContentSides: false,
+					accentColor: accentColor,
+					labelPadding: const EdgeInsets.only(left: frameLabelGap),
+					label: Row(
+						mainAxisSize: MainAxisSize.min,
+						children: [
+							Flexible(
+								child: isTypingTitle
+									? TypewriterText(
+										titleController.text,
+										style: _titleTextStyle(),
+										showCursor: false,
+										onFinished: () {
+											if (mounted) setState(() => isTypingTitle = false);
+										},
+									)
+									: IntrinsicWidth(child: _buildTitleField()),
 							),
+							const SizedBox(width: titlePickerGap),
+							_buildColorPicker(),
+							// In the title's own color, so it is easy to spot
+							if (isShowingUnsaved)
+								Padding(
+									padding: EdgeInsets.only(right: saveError == null ? frameLabelGap : 0),
+									child: Text(unsavedMark, style: TextStyle(color: titleColorFor(shownTitleColor))),
+								),
+							if (saveError != null)
+								TextButton(
+									onPressed: _showSaveErrorDetails,
+									style: invertedFocusButtonStyle(titleColorFor(deleteColorName)),
+									child: const Text(saveErrorLabel),
+								),
+						],
+					),
+					actions: [
+						if (!widget.savesAutomatically) TextButton(onPressed: save, child: const Text(saveNoteLabel)),
+						_buildMoreMenu(accentColor ?? terminalAccent),
+						...widget.extraActions,
 					],
+					bottomLabelPadding: isShowingTags
+						? const EdgeInsets.only(left: frameLabelGap, right: frameLabelGap - textFieldCaretMargin)
+						: frameButtonPadding,
+					bottomLabel: isShowingTags ? _buildTagsRow() : _buildAddTagButton(accentColor ?? terminalAccent),
+					bottomActions: [
+						if (isPhone) ...[
+							TextButton(onPressed: () => _fromButton(() => _moveLines(-1)), child: const Text(moveUpLabel)),
+							TextButton(onPressed: () => _fromButton(() => _moveLines(1)), child: const Text(moveDownLabel)),
+							TextButton(onPressed: () => _fromButton(() => _changeIndent(-1)), child: const Text(outdentLabel)),
+							TextButton(onPressed: () => _fromButton(() => _changeIndent(1)), child: const Text(indentLabel)),
+						],
+					],
+					child: body,
 				),
-				actions: [
-					if (!widget.savesAutomatically) TextButton(onPressed: save, child: const Text(saveNoteLabel)),
-					_buildMoreMenu(accentColor ?? terminalAccent),
-					...widget.extraActions,
-				],
-				bottomLabel: isShowingTags ? _buildTagsRow() : _buildAddTagButton(accentColor ?? terminalAccent),
-				bottomActions: [
-					if (isPhone) ...[
-						TextButton(onPressed: () => _fromButton(() => _moveLines(-1)), child: const Text(moveUpLabel)),
-						TextButton(onPressed: () => _fromButton(() => _moveLines(1)), child: const Text(moveDownLabel)),
-						TextButton(onPressed: () => _fromButton(() => _changeIndent(-1)), child: const Text(outdentLabel)),
-						TextButton(onPressed: () => _fromButton(() => _changeIndent(1)), child: const Text(indentLabel)),
-					],
-				],
-				child: body,
 			),
 		);
 	}
@@ -797,6 +818,8 @@ class NoteEditorState extends State<NoteEditor> {
 				ShortcutAction.outdent: () => _changeIndent(-1),
 				ShortcutAction.moveLinesUp: () => _moveLines(-1),
 				ShortcutAction.moveLinesDown: () => _moveLines(1),
+				ShortcutAction.bold: () => _toggleEmphasis(boldMark),
+				ShortcutAction.italic: () => _toggleEmphasis(italicMark),
 				ShortcutAction.toggleCheckbox: bodyController.toggleSelectedCheckboxes,
 			}),
 			child: Focus(

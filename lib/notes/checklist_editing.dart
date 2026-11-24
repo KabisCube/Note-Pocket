@@ -94,49 +94,79 @@ TextSelection? selectionOutsidePrefix(String text, int cursor, TextSelection pre
 	return boxSelection ?? lineAbove ?? atTextStart;
 }
 
+// Toggles the checkbox on the line starting at lineStart. Checking it checks the ones nested under it too.
 String toggleCheckedAt(String text, int lineStart) {
-	final range = lineAt(text, lineStart);
-	final line = editorLineAt(text, lineStart);
-	return text.replaceRange(range.start, range.end, noteSyntax.format(line.toggled()));
+	final isChecked = editorLineAt(text, lineStart).isChecked;
+	return _setCheckedAt(text, [lineStart], checked: !isChecked).text;
 }
 
 // Checks the checkboxes on the selected lines, or unchecks them when they all already are checked.
 // Other lines are left alone. Checked and unchecked boxes are the same length, so the selection stays.
 TextEditingValue toggleCheckedLines(TextEditingValue value) {
 	if (!value.selection.isValid) return value;
-	final text = value.text;
-	final range = _selectedLines(text, value.selection);
-	final lines = text.substring(range.start, range.end).split(lineBreak).map(noteSyntax.parse).toList();
-	final checkboxes = lines.where((line) => line.isCheckbox);
+	final checkboxes = _selectedLineStarts(value.text, value.selection)
+		.map((lineStart) => editorLineAt(value.text, lineStart))
+		.where((line) => line.isCheckbox);
 	if (checkboxes.isEmpty) return value;
-
-	final newType = checkboxes.every((line) => line.isChecked) ? LineType.unchecked : LineType.checked;
-	final updatedBlock = [
-		for (final line in lines) line.isCheckbox ? noteSyntax.format(line.withType(newType)) : noteSyntax.format(line),
-	].join(lineBreak);
-	return value.copyWith(text: text.replaceRange(range.start, range.end, updatedBlock));
+	final isAllChecked = checkboxes.every((line) => line.isChecked);
+	return value.copyWith(text: setCheckedLines(value.text, value.selection, checked: !isAllChecked).text);
 }
 
 // Checks (or unchecks) every checkbox on the selected lines, as when one of them is clicked while
 // several lines are selected. Returns the new text and the starts of the lines that changed.
-// Checked and unchecked boxes are the same length, so line starts and the selection stay put.
 ({String text, List<int> changedLineStarts}) setCheckedLines(String text, TextSelection selection, {required bool checked}) {
-	final range = _selectedLines(text, selection);
+	return _setCheckedAt(text, _selectedLineStarts(text, selection), checked: checked);
+}
+
+// The starts of the lines that differ, between texts where only checkboxes were checked or unchecked.
+Set<int> changedLineStarts(String before, String after) {
+	return {
+		for (var index = 0; index < before.length; index++)
+			if (before[index] != after[index]) lineAt(before, index).start,
+	};
+}
+
+// Checking also checks everything nested under the lines. Unchecking leaves nested ones as they are,
+// so it doesn't lose track of what was done.
+// Checked and unchecked boxes are the same length, so line starts stay put.
+({String text, List<int> changedLineStarts}) _setCheckedAt(String text, List<int> lineStarts, {required bool checked}) {
 	final wantedType = checked ? LineType.checked : LineType.unchecked;
+	final allLineStarts = {
+		...lineStarts,
+		if (checked)
+			for (final lineStart in lineStarts)
+				if (editorLineAt(text, lineStart).isCheckbox) ..._nestedLineStarts(text, lineStart),
+	};
 	final changedLineStarts = <int>[];
-	final updatedLines = <String>[];
-	var lineStart = range.start;
-	for (final rawLine in text.substring(range.start, range.end).split(lineBreak)) {
-		final line = noteSyntax.parse(rawLine);
-		if (line.isCheckbox && line.type != wantedType) {
-			changedLineStarts.add(lineStart);
-			updatedLines.add(noteSyntax.format(line.withType(wantedType)));
-		} else {
-			updatedLines.add(rawLine);
-		}
-		lineStart += rawLine.length + lineBreak.length;
+	var updated = text;
+	for (final lineStart in allLineStarts) {
+		final line = editorLineAt(updated, lineStart);
+		if (!line.isCheckbox || line.type == wantedType) continue;
+		updated = updated.replaceRange(lineStart, lineAt(updated, lineStart).end, noteSyntax.format(line.withType(wantedType)));
+		changedLineStarts.add(lineStart);
 	}
-	return (text: text.replaceRange(range.start, range.end, updatedLines.join(lineBreak)), changedLineStarts: changedLineStarts);
+	return (text: updated, changedLineStarts: changedLineStarts);
+}
+
+// The lines below that are indented further than the one at lineStart, up to the first that isn't.
+List<int> _nestedLineStarts(String text, int lineStart) {
+	final parentIndent = _indentAt(text, lineStart);
+	final nested = <int>[];
+	var nextStart = lineAt(text, lineStart).end + lineBreak.length;
+	while (nextStart < text.length && _indentAt(text, nextStart) > parentIndent) {
+		nested.add(nextStart);
+		nextStart = lineAt(text, nextStart).end + lineBreak.length;
+	}
+	return nested;
+}
+
+int _indentAt(String text, int lineStart) => RegExp('$tabIndent*').matchAsPrefix(text, lineStart)![0]!.length;
+
+List<int> _selectedLineStarts(String text, TextSelection selection) {
+	final range = _selectedLines(text, selection);
+	return [
+		for (var start = range.start; start <= range.end; start = lineAt(text, start).end + lineBreak.length) start,
+	];
 }
 
 // Whether the line starting at lineStart is one of the lines the selection touches.

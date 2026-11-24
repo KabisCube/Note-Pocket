@@ -16,6 +16,7 @@ import '../notes/notes_folder.dart';
 import '../notes/path_completion.dart';
 import '../notes/tag_completion.dart';
 import 'ascii_widgets.dart';
+import 'inverted_selection.dart';
 import 'checklist_controller.dart';
 import 'note_editor.dart';
 import 'send_screen.dart';
@@ -65,7 +66,9 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-	late final folderController = TextEditingController(text: widget.currentFolder)..addListener(_handleFolderTyped);
+	late final folderController = InvertedSelectionController(text: widget.currentFolder)
+		..focusNode = folderFocus
+		..addListener(_handleFolderTyped);
 	final folderFocus = FocusNode();
 	final recordingFocus = FocusNode();
 	final pathStyle = PathStyle.current;

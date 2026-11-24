@@ -110,7 +110,6 @@ Color get terminalText => currentPalette.text;
 Color get terminalDimText => currentPalette.dimText;
 Color get terminalAccent => titleColorFor(accentColorName);
 Map<String, Color> get titleColors => currentPalette.titleColors;
-const selectionOpacity = 0.3;
 
 // Keyboard focus is shown the terminal way: text and background swap colors
 ButtonStyle invertedFocusButtonStyle(Color color) {
@@ -182,7 +181,8 @@ ThemeData buildTerminalTheme() {
 		),
 		textSelectionTheme: TextSelectionThemeData(
 			cursorColor: terminalAccent,
-			selectionColor: terminalAccent.withValues(alpha: selectionOpacity),
+			// Opaque, since selected text is drawn in the background color (see inverted_selection.dart)
+			selectionColor: terminalText,
 			selectionHandleColor: terminalAccent,
 		),
 	);

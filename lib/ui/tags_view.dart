@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 import '../notes/note.dart';
 import '../notes/tag_completion.dart';
 import 'ascii_widgets.dart';
+import 'inverted_selection.dart';
 import 'terminal_theme.dart';
 
 // The marker shown when more than one tag continues after the completed part
@@ -153,7 +154,7 @@ class TagsRow extends StatelessWidget {
 }
 
 // The tags field in the editor, coloring each typed tag like it is shown everywhere else.
-class TagsController extends TextEditingController {
+class TagsController extends TextEditingController with InvertedSelection {
 	TagsController({super.text});
 
 	Map<String, String> tagColors = const {};
@@ -173,7 +174,7 @@ class TagsController extends TextEditingController {
 			position = match.end;
 		}
 		if (position < text.length) children.add(TextSpan(text: text.substring(position)));
-		return TextSpan(style: style, children: children);
+		return withInvertedSelection(TextSpan(style: style, children: children));
 	}
 }
 

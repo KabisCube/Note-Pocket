@@ -44,7 +44,11 @@ const checkboxFrameInterval = Duration(milliseconds: 60);
 // Frame
 const frameLabelRowHeight = 26.0;
 const frameCornerInset = 10.0;
-const frameLabelPadding = EdgeInsets.symmetric(horizontal: 4);
+// The gap between the border line and the text set into it
+const frameLabelGap = 4.0;
+const frameLabelPadding = EdgeInsets.symmetric(horizontal: frameLabelGap);
+// Buttons have the same gap built in (compactButtonPadding)
+const frameButtonPadding = EdgeInsets.zero;
 const frameSidePadding = 12.0;
 const frameContentPadding = EdgeInsets.fromLTRB(frameSidePadding, 2, frameSidePadding, 12);
 const frameContentPaddingAboveLabel = EdgeInsets.fromLTRB(frameSidePadding, 2, frameSidePadding, 0);
@@ -178,7 +182,9 @@ class AsciiFrame extends StatelessWidget {
 		required this.label,
 		required this.child,
 		this.actions = const [],
+		this.labelPadding = frameLabelPadding,
 		this.bottomLabel,
+		this.bottomLabelPadding = frameLabelPadding,
 		this.bottomActions = const [],
 		this.fillsSpace = false,
 		this.padsContentSides = true,
@@ -188,7 +194,10 @@ class AsciiFrame extends StatelessWidget {
 	final Widget label;
 	final Widget child;
 	final List<Widget> actions;
+	// Less than usual on a side where the label has its own space, like a button or a text field
+	final EdgeInsets labelPadding;
 	final Widget? bottomLabel;
+	final EdgeInsets bottomLabelPadding;
 	final List<Widget> bottomActions;
 	final bool fillsSpace;
 	// Off when the content pads itself, like a text field that should be clickable right up to the border
@@ -224,9 +233,9 @@ class AsciiFrame extends StatelessWidget {
 								children: [
 									const SizedBox(width: frameCornerInset),
 									Expanded(
-										child: Align(alignment: Alignment.centerLeft, child: _coverBorder(label)),
+										child: Align(alignment: Alignment.centerLeft, child: _coverBorder(label, labelPadding)),
 									),
-									if (actions.isNotEmpty) _coverBorder(_tintedActions(context, actions)),
+									if (actions.isNotEmpty) _coverBorder(_tintedActions(context, actions), frameButtonPadding),
 									const SizedBox(width: frameCornerInset),
 								],
 							),
@@ -241,10 +250,10 @@ class AsciiFrame extends StatelessWidget {
 										Expanded(
 											child: Align(
 												alignment: Alignment.centerLeft,
-												child: bottomLabel == null ? null : _coverBorder(bottomLabel!),
+												child: bottomLabel == null ? null : _coverBorder(bottomLabel!, bottomLabelPadding),
 											),
 										),
-										if (bottomActions.isNotEmpty) _coverBorder(_tintedActions(context, bottomActions)),
+										if (bottomActions.isNotEmpty) _coverBorder(_tintedActions(context, bottomActions), frameButtonPadding),
 										const SizedBox(width: frameCornerInset),
 									],
 								),
@@ -267,10 +276,10 @@ class AsciiFrame extends StatelessWidget {
 		);
 	}
 
-	Widget _coverBorder(Widget child) {
+	Widget _coverBorder(Widget child, EdgeInsets padding) {
 		return ColoredBox(
 			color: terminalBackground,
-			child: Padding(padding: frameLabelPadding, child: child),
+			child: Padding(padding: padding, child: child),
 		);
 	}
 }

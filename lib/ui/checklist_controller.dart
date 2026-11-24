@@ -27,6 +27,7 @@ import 'package:material_ui/material_ui.dart';
 import '../notes/checklist_editing.dart';
 import '../notes/note.dart';
 import 'ascii_widgets.dart';
+import 'inverted_selection.dart';
 import 'terminal_theme.dart';
 
 const tabSize = 4;
@@ -346,7 +347,7 @@ List<InlineSpan> _withTabGaps(String text, _TabStops tabs) {
 	return spans;
 }
 
-class ChecklistController extends TextEditingController {
+class ChecklistController extends TextEditingController with InvertedSelection {
 	ChecklistController({super.text}) {
 		addListener(_handleSelectionChange);
 	}
@@ -402,9 +403,10 @@ class ChecklistController extends TextEditingController {
 	void _toggleCheckbox(int lineStart) {
 		final line = editorLineAt(text, lineStart);
 		final prefixEnd = lineStart + noteSyntax.prefixLength(line);
-		_startAnimation({lineStart}, toChecked: !line.isChecked);
+		final updated = toggleCheckedAt(text, lineStart);
+		_startAnimation(changedLineStarts(text, updated), toChecked: !line.isChecked);
 		value = TextEditingValue(
-			text: toggleCheckedAt(text, lineStart),
+			text: updated,
 			selection: TextSelection.collapsed(offset: prefixEnd),
 		);
 	}
@@ -420,9 +422,8 @@ class ChecklistController extends TextEditingController {
 	void toggleSelectedCheckboxes() {
 		final updated = toggleCheckedLines(value);
 		if (updated.text == text) return;
-		final lineStart = lineAt(text, selection.start).start;
-		final isOneLine = lineStart == lineAt(text, selection.end).start;
-		if (isOneLine) _startAnimation({lineStart}, toChecked: !editorLineAt(text, lineStart).isChecked);
+		final changed = changedLineStarts(text, updated.text);
+		_startAnimation(changed, toChecked: editorLineAt(updated.text, changed.first).isChecked);
 		value = updated;
 	}
 
@@ -430,8 +431,9 @@ class ChecklistController extends TextEditingController {
 	bool toggleSelectedBox() {
 		final box = selectedCheckboxBox(value);
 		if (box == null) return false;
-		_startAnimation({box.lineStart}, toChecked: !editorLineAt(text, box.lineStart).isChecked);
-		value = value.copyWith(text: toggleCheckedAt(text, box.lineStart));
+		final updated = toggleCheckedAt(text, box.lineStart);
+		_startAnimation(changedLineStarts(text, updated), toChecked: !editorLineAt(text, box.lineStart).isChecked);
+		value = value.copyWith(text: updated);
 		return true;
 	}
 
@@ -455,7 +457,7 @@ class ChecklistController extends TextEditingController {
 
 	@override
 	TextSpan buildTextSpan({required BuildContext context, TextStyle? style, required bool withComposing}) {
-		return checklistSpan(
+		return withInvertedSelection(checklistSpan(
 			text,
 			tabWidth: tabWidthFor(context, style),
 			style: style,
@@ -471,6 +473,6 @@ class ChecklistController extends TextEditingController {
 					textStyle: style,
 					textScaler: MediaQuery.textScalerOf(context),
 				),
-		);
+		));
 	}
 }
