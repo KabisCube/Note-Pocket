@@ -19,6 +19,8 @@ enum ShortcutAction {
 	]),
 	bold('bold', [SingleActivator(LogicalKeyboardKey.keyB, control: true)]),
 	italic('italic', [SingleActivator(LogicalKeyboardKey.keyI, control: true)]),
+	// The same shortcut as quick fixes in VS Code
+	spelling('spelling suggestions', [SingleActivator(LogicalKeyboardKey.period, control: true)]),
 	// The usual Windows keys for opening a menu
 	openMenu('open the [...] menu', [
 		SingleActivator(LogicalKeyboardKey.f10, shift: true),

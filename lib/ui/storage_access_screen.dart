@@ -66,7 +66,7 @@ class _StorageAccessScreenState extends State<StorageAccessScreen> with WidgetsB
 									alignment: Alignment.centerLeft,
 									child: TextButton(
 										onPressed: widget.onUseAppFolder,
-										style: invertedFocusButtonStyle(terminalDimText),
+										style: invertedButtonStyle(terminalDimText),
 										child: const Text(useAppFolderLabel),
 									),
 								),

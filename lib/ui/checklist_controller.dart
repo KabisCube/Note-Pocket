@@ -14,6 +14,7 @@
 //   the wrap points are worked out here: the space at each wrap point is drawn as a line break, and
 //   the next character is drawn with the indent in front of it. Each still counts as one character,
 //   so the cursor and selection keep working. The file itself is not changed.
+// - Knows which words are misspelled, except the one being typed (drawn by SpellingUnderlines).
 // - Keeps the cursor out of checkbox prefixes, so they behave like a single symbol. Left from the
 //   start of an item's text selects its box instead, drawn inverted, so x or space can toggle it.
 // - Toggles a checkbox when it is tapped, or the selected ones with a shortcut, with a short ascii animation.
@@ -26,6 +27,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../notes/checklist_editing.dart';
 import '../notes/note.dart';
+import '../spelling/spell_checker.dart';
 import 'ascii_widgets.dart';
 import 'inverted_selection.dart';
 import 'terminal_theme.dart';
@@ -349,6 +351,7 @@ List<InlineSpan> _withTabGaps(String text, _TabStops tabs) {
 
 class ChecklistController extends TextEditingController with InvertedSelection {
 	ChecklistController({super.text}) {
+		previousText = text;
 		addListener(_handleSelectionChange);
 	}
 
@@ -357,6 +360,10 @@ class ChecklistController extends TextEditingController with InvertedSelection {
 	// Null draws prefixes in the text color
 	Color? checkboxColor;
 	double? wrapWidth;
+	SpellChecker? spellChecker;
+	// Where the cursor is right after typing, so a half-typed word isn't marked. Null once the cursor moves.
+	int? typingCursor;
+	late String previousText;
 	bool isTapPending = false;
 	// What was selected when the pointer went down, so a tap on a box can apply to all selected lines
 	TextSelection? selectionBeforeTap;
@@ -379,7 +386,55 @@ class ChecklistController extends TextEditingController with InvertedSelection {
 
 	bool get isBoxSelected => selectedCheckboxBox(value) != null;
 
+	List<TextRange> get misspelledWords {
+		final cursor = focusNode?.hasFocus ?? false ? typingCursor : null;
+		return [
+			for (final word in allMisspelledWords)
+				if (cursor == null || cursor < word.start || cursor > word.end) word,
+		];
+	}
+
+	// With the word being typed
+	List<TextRange> get allMisspelledWords => [
+		for (final word in spellChecker?.misspelledIn(text) ?? const <({int start, int end})>[])
+			TextRange(start: word.start, end: word.end),
+	];
+
+	TextRange? misspelledWordAt(int offset) {
+		return allMisspelledWords.where((word) => offset >= word.start && offset <= word.end).firstOrNull;
+	}
+
+	// The misspelled word at the cursor, or else the closest one before it, or else the first one after it
+	TextRange? get misspelledWordNearCursor {
+		if (!selection.isValid) return null;
+		final words = allMisspelledWords;
+		return words.where((word) => word.start <= selection.extentOffset).lastOrNull ?? words.firstOrNull;
+	}
+
+	// Puts another word in place of the one in the range. A cursor in the word goes to its end,
+	// and one elsewhere stays in its place in the text.
+	void replaceWord(TextRange word, String replacement) {
+		final cursor = selection.extentOffset;
+		final lengthChange = replacement.length - (word.end - word.start);
+		final isBeforeWord = selection.isValid && cursor < word.start;
+		value = TextEditingValue(
+			text: text.replaceRange(word.start, word.end, replacement),
+			selection: TextSelection.collapsed(offset: isBeforeWord ? cursor : max(cursor, word.end) + lengthChange),
+		);
+	}
+
+	// Listeners are also called for things like animation frames, where nothing changed
+	void _updateTypingCursor() {
+		if (text != previousText) {
+			typingCursor = selection.isCollapsed ? selection.baseOffset : null;
+			previousText = text;
+		} else if (!selection.isCollapsed || selection.baseOffset != typingCursor) {
+			typingCursor = null;
+		}
+	}
+
 	void _handleSelectionChange() {
+		_updateTypingCursor();
 		final wasTap = isTapPending;
 		final selectionAtTap = selectionBeforeTap;
 		final before = previousSelection;

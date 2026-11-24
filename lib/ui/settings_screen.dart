@@ -1,4 +1,4 @@
-// Settings: theme, accent color, notes folder, saving, keyboard shortcuts and sync.
+// Settings: theme, accent color, notes folder, saving, spelling, keyboard shortcuts and sync.
 // The notes folder can be typed, with Tab completing folder names like a terminal, or picked with
 // the system's folder picker.
 // A shortcut is changed by pressing [set] and then the new keys; Esc cancels. Keys already used by
@@ -15,6 +15,7 @@ import '../notes/note_storage.dart';
 import '../notes/notes_folder.dart';
 import '../notes/path_completion.dart';
 import '../notes/tag_completion.dart';
+import '../spelling/spell_checker.dart';
 import 'ascii_widgets.dart';
 import 'inverted_selection.dart';
 import 'checklist_controller.dart';
@@ -36,11 +37,19 @@ const resetShortcutLabel = '[reset]';
 const recordingHint = 'press the new keys, esc to cancel';
 const autoSaveOption = 'as you type';
 const manualSaveOption = 'on ctrl+s';
+const spellingTitle = 'spellchecking';
+const addedWordsTitle = 'words added to dictionary';
+const onOption = 'on';
+const offOption = 'off';
+const removeWordLabel = '[x]';
 
 // The file manager command for showing a folder on each desktop system
 final fileManagerCommand = Platform.isWindows ? 'explorer' : (Platform.isMacOS ? 'open' : 'xdg-open');
 final canOpenFolder = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+// Where spell checking works; without dictionaries the settings tell how to get it
+bool get hasSpellingSettings => Platform.isLinux || systemSpellChecker != null;
 const lineGap = 8.0;
+const categoryGap = 28.0;
 const shortcutKeysGap = 12.0;
 
 class SettingsScreen extends StatefulWidget {
@@ -244,7 +253,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 		final shownColor = color ?? terminalAccent;
 		return TextButton(
 			onPressed: onPressed,
-			style: invertedFocusButtonStyle(isSelected ? shownColor : (color == null ? terminalDimText : dulled(color))),
+			style: invertedButtonStyle(isSelected ? shownColor : (color == null ? terminalDimText : dulled(color))),
 			child: Text(isSelected ? '[$label]' : ' $label '),
 		);
 	}
@@ -274,15 +283,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
 									child: ListView(
 										children: [
 											..._buildLooks(),
-											const SizedBox(height: lineGap),
+											const SizedBox(height: categoryGap),
 											..._buildFolder(),
-											const SizedBox(height: lineGap),
+											const SizedBox(height: categoryGap),
 											..._buildSaving(),
+											if (hasSpellingSettings) ...[
+												const SizedBox(height: categoryGap),
+												..._buildSpelling(),
+											],
 											if (!isPhone) ...[
-												const SizedBox(height: lineGap),
+												const SizedBox(height: categoryGap),
 												..._buildShortcuts(),
 											],
-											const SizedBox(height: lineGap),
+											const SizedBox(height: categoryGap),
 											..._buildSync(),
 										],
 									),
@@ -389,10 +402,67 @@ class _SettingsScreenState extends State<SettingsScreen> {
 		];
 	}
 
+	List<Widget> _buildSpelling() {
+		final checker = systemSpellChecker;
+		if (checker == null) {
+			return [
+				const Text(spellingTitle),
+				_description('no spell checker found. install enchant and a dictionary for your language, like aspell-en, and restart the app.'),
+			];
+		}
+		final words = checker.addedWords.words;
+		return [
+			const Text(spellingTitle),
+			Wrap(
+				children: [
+					_buildOption(onOption, isSelected: checker.isOn, onPressed: () => _setChecksSpelling(checker, true)),
+					_buildOption(offOption, isSelected: !checker.isOn, onPressed: () => _setChecksSpelling(checker, false)),
+				],
+			),
+			if (words.isNotEmpty) ...[
+				const SizedBox(height: lineGap),
+				const Text(addedWordsTitle),
+				const SizedBox(height: lineGap),
+				for (final word in words) _buildWordRow(checker, word),
+			],
+		];
+	}
+
+	// Laid out like the keyboard shortcuts
+	Widget _buildWordRow(SpellChecker checker, String word) {
+		return Row(
+			children: [
+				Expanded(
+					child: HoverRow(
+						children: [
+							Expanded(child: Text(word)),
+							const SizedBox(width: shortcutKeysGap),
+							TextButton(
+								onPressed: () => setState(() => checker.remove(word)),
+								child: const Text(removeWordLabel),
+							),
+						],
+					),
+				),
+				_buildResetSpace(),
+			],
+		);
+	}
+
+	// As wide as a [reset] button, to keep the buttons before it lined up
+	Widget _buildResetSpace() {
+		return Opacity(opacity: 0, child: IgnorePointer(child: TextButton(onPressed: null, child: const Text(resetShortcutLabel))));
+	}
+
+	Future<void> _setChecksSpelling(SpellChecker checker, bool isOn) async {
+		checker.isOn = isOn;
+		await widget.settings.setChecksSpelling(isOn);
+		if (mounted) setState(() {});
+	}
+
 	List<Widget> _buildShortcuts() {
 		return [
 			const Text('keyboard shortcuts'),
-			_description('arrows, enter and tab completion stay as they are.'),
 			const SizedBox(height: lineGap),
 			for (final action in ShortcutAction.values) _buildShortcutRow(action),
 			if (shortcutNotice != null) ...[
@@ -404,24 +474,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
 	Widget _buildShortcutRow(ShortcutAction action) {
 		final isRecording = recordingAction == action;
+		final isChanged = keyBindings.isChanged(action);
 		return Row(
 			children: [
-				Expanded(child: Text(action.description)),
-				const SizedBox(width: shortcutKeysGap),
-				Text(
-					isRecording ? recordingHint : describeActivators(keyBindings.of(action)),
-					style: TextStyle(color: isRecording ? terminalAccent : terminalDimText),
+				Expanded(
+					child: HoverRow(
+						children: [
+							Expanded(child: Text(action.description)),
+							const SizedBox(width: shortcutKeysGap),
+							Text(
+								isRecording ? recordingHint : describeActivators(keyBindings.of(action)),
+								style: TextStyle(color: isRecording ? terminalAccent : terminalDimText),
+							),
+							const SizedBox(width: shortcutKeysGap),
+							TextButton(
+								onPressed: () => _toggleRecording(action),
+								child: Text(isRecording ? cancelShortcutLabel : setShortcutLabel),
+							),
+							if (isChanged)
+								TextButton(onPressed: () => _resetShortcut(action), child: const Text(resetShortcutLabel)),
+						],
+					),
 				),
-				const SizedBox(width: shortcutKeysGap),
-				TextButton(
-					onPressed: () => _toggleRecording(action),
-					child: Text(isRecording ? cancelShortcutLabel : setShortcutLabel),
-				),
-				if (keyBindings.isChanged(action))
-					TextButton(onPressed: () => _resetShortcut(action), child: const Text(resetShortcutLabel))
-				else
-					// Keeps the [set] buttons lined up
-					Opacity(opacity: 0, child: IgnorePointer(child: TextButton(onPressed: null, child: const Text(resetShortcutLabel)))),
+				if (!isChanged) _buildResetSpace(),
 			],
 		);
 	}

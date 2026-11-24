@@ -694,7 +694,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
 					focusNode: _tabFocusFor(tag),
 					onPressed: () => _selectTag(tag),
 					onLongPress: tag == null ? null : () => _pickTagColor(tabContext, tag),
-					style: invertedFocusButtonStyle(isSelected ? tagColor : dulled(tagColor)),
+					style: invertedButtonStyle(isSelected ? tagColor : dulled(tagColor)),
 					child: Text(isSelected ? '[$label]' : ' $label '),
 				),
 			),
@@ -791,6 +791,8 @@ class _NotePreview extends StatefulWidget {
 
 class _NotePreviewState extends State<_NotePreview> {
 	bool isHovered = false;
+	// The title isn't inverted then, since a click goes to the button
+	bool isButtonHovered = false;
 
 	@override
 	Widget build(BuildContext context) {
@@ -810,7 +812,11 @@ class _NotePreviewState extends State<_NotePreview> {
 				label: _buildTitle(),
 				actions: [
 					if (onMaximize != null)
-						TextButton(onPressed: onMaximize, child: const Text(maximizeLabel)),
+						TextButton(
+							onPressed: onMaximize,
+							onHover: (hovered) => setState(() => isButtonHovered = hovered),
+							child: const Text(maximizeLabel),
+						),
 				],
 				bottomLabel: tags.isEmpty
 					? null
@@ -826,9 +832,10 @@ class _NotePreviewState extends State<_NotePreview> {
 	}
 
 	Widget _buildTitle() {
-		final title = InvertedWhenFocused(
+		final title = InvertedLabel(
+			followsMouse: false,
 			color: titleColorFor(widget.note.titleColor),
-			isHighlighted: isHovered,
+			isHighlighted: isHovered && !isButtonHovered,
 			builder: (textColor) => Text(
 				widget.note.title,
 				style: titleStyle.copyWith(color: textColor),

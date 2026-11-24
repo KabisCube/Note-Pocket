@@ -203,7 +203,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
 			child: Container(
 				padding: legendPadding,
 				color: sideColor.withValues(alpha: sideTintOpacity),
-				child: invertedWhenFocusedText(label, sideColor),
+				child: invertedLabelText(label, sideColor),
 			),
 		);
 	}

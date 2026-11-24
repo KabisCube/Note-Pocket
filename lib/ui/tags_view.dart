@@ -19,19 +19,12 @@ const tagColorSwatch = '\u25a0';
 // Color menus: left-aligned and only as wide as the longest color name
 const colorMenuConstraints = BoxConstraints();
 
-Widget colorMenuLabel(String colorName) {
-	return invertedWhenFocusedText('$tagColorSwatch $colorName', titleColorFor(colorName));
-}
+String colorMenuLabel(String colorName) => '$tagColorSwatch $colorName';
 
 List<PopupMenuEntry<String>> colorMenuItems() {
 	return [
 		for (final name in [noTagColorName, ...titleColorNames])
-			PopupMenuItem(
-				value: name,
-				height: menuItemHeight,
-				padding: menuItemPadding,
-				child: colorMenuLabel(name),
-			),
+			TerminalMenuItem(value: name, label: colorMenuLabel(name), color: titleColorFor(name)),
 	];
 }
 
@@ -56,29 +49,12 @@ class ColorContextMenu extends StatelessWidget {
 
 	@override
 	Widget build(BuildContext context) {
-		return CustomSingleChildLayout(
-			delegate: DesktopTextSelectionToolbarLayoutDelegate(anchor: anchor),
-			child: Container(
-				decoration: BoxDecoration(color: terminalBackground, border: Border.fromBorderSide(squareShape.side)),
-				child: IntrinsicWidth(
-					child: Column(
-						mainAxisSize: MainAxisSize.min,
-						crossAxisAlignment: CrossAxisAlignment.stretch,
-						children: [
-							for (final name in [noTagColorName, ...titleColorNames])
-								InkWell(
-									onTap: () => onPicked(name),
-									child: Container(
-										height: menuItemHeight,
-										padding: menuItemPadding,
-										alignment: Alignment.centerLeft,
-										child: colorMenuLabel(name),
-									),
-								),
-						],
-					),
-				),
-			),
+		return FieldContextMenu(
+			anchor: anchor,
+			choices: [
+				for (final name in [noTagColorName, ...titleColorNames])
+					(label: colorMenuLabel(name), color: titleColorFor(name), onTap: () => onPicked(name)),
+			],
 		);
 	}
 }

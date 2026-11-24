@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:note_pocket/notes/note_storage.dart';
 import 'package:note_pocket/notes/notes_folder.dart';
+import 'package:note_pocket/spelling/spell_checker.dart';
+import 'package:note_pocket/spelling/word_list.dart';
 import 'package:note_pocket/ui/settings_screen.dart';
 import 'package:note_pocket/ui/shortcuts.dart';
 
@@ -72,5 +74,25 @@ void main() {
 		await tester.tap(find.descendant(of: saveRow, matching: find.text(resetShortcutLabel)));
 		await tester.pump();
 		expect(keyBindings.isChanged(ShortcutAction.saveNote), isFalse);
+	});
+
+	testWidgets('spell checking can be turned off and added words removed', (tester) async {
+		final checker = SpellChecker([], addedWords: WordList(null, ['kabis']));
+		systemSpellChecker = checker;
+		addTearDown(() => systemSpellChecker = null);
+		final settings = await openSettings(tester);
+		final word = find.text('kabis');
+		await tester.scrollUntilVisible(word, 100, scrollable: find.descendant(of: find.byType(ListView), matching: find.byType(Scrollable)).first);
+
+		await tester.tap(find.text(' $offOption '));
+		await tester.pump();
+		expect(checker.isOn, isFalse);
+		expect(settings.checksSpelling, isFalse);
+
+		final wordRow = find.ancestor(of: word, matching: find.byType(Row)).first;
+		await tester.tap(find.descendant(of: wordRow, matching: find.text(removeWordLabel)));
+		await tester.pump();
+		expect(word, findsNothing);
+		expect(checker.addedWords.words, isEmpty);
 	});
 }

@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
+import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -10,11 +12,14 @@ import '../notes/emphasis_editing.dart';
 import '../notes/note.dart';
 import '../notes/note_storage.dart';
 import '../notes/tag_completion.dart';
+import '../spelling/spell_checker.dart';
 import 'ascii_widgets.dart';
 import 'checklist_controller.dart';
 import 'inverted_selection.dart';
 import 'send_screen.dart';
 import 'shortcuts.dart';
+import 'spelling_menu.dart';
+import 'spelling_underlines.dart';
 import 'tags_view.dart';
 import 'terminal_theme.dart';
 
@@ -42,10 +47,9 @@ const moveUpLabel = '[↑]';
 const moveDownLabel = '[↓]';
 const checkboxOptionLabel = '[ ] checkbox';
 const bulletOptionLabel = '• bullet';
+const addToDictionaryLabel = '[+] add to dictionary';
 const deleteColorName = 'red';
 
-// Phones have no Tab or Ctrl keys, so they get line buttons at the bottom
-final isPhone = Platform.isAndroid || Platform.isIOS;
 const tagsHint = '#tags';
 const titleHint = 'title';
 const colorSwatch = '■';
@@ -113,10 +117,12 @@ class NoteEditorState extends State<NoteEditor> {
 	late final InvertedSelectionController titleController;
 	late final ChecklistController bodyController;
 	late final TagsController tagsController;
+	late final SpellingMenu spellingMenu;
 	late final bool isNewNote;
 	// An opened note's name types itself out first, then turns into the editable title field
 	late bool isTypingTitle;
 	final bodyFocus = FocusNode();
+	final bodyScroll = ScrollController();
 	final titleFocus = FocusNode();
 	final tagsFocus = FocusNode();
 	final moreMenuKey = GlobalKey<PopupMenuButtonState<VoidCallback>>();
@@ -165,7 +171,14 @@ class NoteEditorState extends State<NoteEditor> {
 			..addListener(_handleTitleChange);
 		bodyController = ChecklistController(text: parts.body)
 			..focusNode = bodyFocus
+			..spellChecker = systemSpellChecker
 			..addListener(_scheduleAutosave);
+		spellingMenu = SpellingMenu(
+			controller: bodyController,
+			focusNode: bodyFocus,
+			scrollController: bodyScroll,
+			choicesFor: (word) => _spellingChoices(word, close: () => spellingMenu.close()),
+		);
 		final tags = note == null && draft == null ? widget.initialTags : parts.tags;
 		lastSavedContent = note == null
 			? contentWith(tags)
@@ -219,10 +232,12 @@ class NoteEditorState extends State<NoteEditor> {
 		exitListener.dispose();
 		autosaveTimer?.cancel();
 		colorTagTimer?.cancel();
+		spellingMenu.dispose();
 		titleController.dispose();
 		bodyController.dispose();
 		tagsController.dispose();
 		bodyFocus.dispose();
+		bodyScroll.dispose();
 		titleFocus.dispose();
 		tagsFocus.dispose();
 		super.dispose();
@@ -274,6 +289,7 @@ class NoteEditorState extends State<NoteEditor> {
 
 	// With a checkbox's box selected, x or space toggles it (caught here, before it is typed, so it animates)
 	KeyEventResult _handleBodyKeys(FocusNode node, KeyEvent event) {
+		if (spellingMenu.handleKey(event) == KeyEventResult.handled) return KeyEventResult.handled;
 		final keyboard = HardwareKeyboard.instance;
 		final isPlainCharacter = !keyboard.isControlPressed && !keyboard.isAltPressed && !keyboard.isMetaPressed;
 		if (event is KeyDownEvent && isPlainCharacter && boxToggleCharacters.contains(event.character)) {
@@ -288,7 +304,7 @@ class NoteEditorState extends State<NoteEditor> {
 		if (event is KeyUpEvent || !(isDown || isUp) || !_isPlainArrow || !bodyController.selection.isCollapsed) {
 			return KeyEventResult.ignored;
 		}
-		final renderEditable = bodyFocus.context?.findAncestorStateOfType<EditableTextState>()?.renderEditable;
+		final renderEditable = _bodyEditable();
 		if (renderEditable == null) return KeyEventResult.ignored;
 
 		final shownLine = renderEditable.getLineAtOffset(bodyController.selection.extent);
@@ -303,6 +319,8 @@ class NoteEditorState extends State<NoteEditor> {
 		}
 		return KeyEventResult.ignored;
 	}
+
+	RenderEditable? _bodyEditable() => bodyFocus.context?.findAncestorStateOfType<EditableTextState>()?.renderEditable;
 
 	void _openMoreMenu() => moreMenuKey.currentState?.showButtonMenu();
 
@@ -611,7 +629,7 @@ class NoteEditorState extends State<NoteEditor> {
 							if (saveError != null)
 								TextButton(
 									onPressed: _showSaveErrorDetails,
-									style: invertedFocusButtonStyle(titleColorFor(deleteColorName)),
+									style: invertedButtonStyle(titleColorFor(deleteColorName)),
 									child: const Text(saveErrorLabel),
 								),
 						],
@@ -673,7 +691,7 @@ class NoteEditorState extends State<NoteEditor> {
 	Widget _buildAddTagButton(Color buttonColor) {
 		return TextButton(
 			onPressed: _showTags,
-			style: invertedFocusButtonStyle(buttonColor),
+			style: invertedButtonStyle(buttonColor),
 			child: const Text(addTagLabel),
 		);
 	}
@@ -685,16 +703,16 @@ class NoteEditorState extends State<NoteEditor> {
 			padding: EdgeInsets.zero,
 			onSelected: (action) => action(),
 			itemBuilder: (_) => [
-				PopupMenuItem(height: menuItemHeight, padding: menuItemPadding, value: () => _applyListType(LineType.unchecked), child: invertedWhenFocusedText(checkboxOptionLabel, terminalText)),
-				PopupMenuItem(height: menuItemHeight, padding: menuItemPadding, value: () => _applyListType(LineType.bullet), child: invertedWhenFocusedText(bulletOptionLabel, terminalText)),
-				PopupMenuItem(height: menuItemHeight, padding: menuItemPadding, value: _openSend, child: invertedWhenFocusedText(sendLabel, terminalText)),
-				PopupMenuItem(height: menuItemHeight, padding: menuItemPadding, value: _delete, child: invertedWhenFocusedText(deleteLabel, titleColorFor(deleteColorName))),
+				TerminalMenuItem(value: () => _applyListType(LineType.unchecked), label: checkboxOptionLabel, color: terminalText),
+				TerminalMenuItem(value: () => _applyListType(LineType.bullet), label: bulletOptionLabel, color: terminalText),
+				TerminalMenuItem(value: _openSend, label: sendLabel, color: terminalText),
+				TerminalMenuItem(value: _delete, label: deleteLabel, color: titleColorFor(deleteColorName)),
 			],
-			child: InvertedWhenFocused(
-				color: buttonColor,
-				builder: (textColor) => Padding(
-					padding: compactButtonPadding,
-					child: Text(moreLabel, style: TextStyle(color: textColor)),
+			child: Padding(
+				padding: compactButtonPadding,
+				child: InvertedLabel(
+					color: buttonColor,
+					builder: (textColor) => Text(moreLabel, style: TextStyle(color: textColor)),
 				),
 			),
 		);
@@ -780,11 +798,11 @@ class NoteEditorState extends State<NoteEditor> {
 			onSelected: _setTitleColor,
 			constraints: colorMenuConstraints,
 			itemBuilder: (_) => colorMenuItems(),
-			child: InvertedWhenFocused(
-				color: titleColorFor(shownTitleColor),
-				builder: (textColor) => Padding(
-					padding: compactButtonPadding,
-					child: Text('[$colorSwatch]', style: TextStyle(color: textColor)),
+			child: Padding(
+				padding: compactButtonPadding,
+				child: InvertedLabel(
+					color: titleColorFor(shownTitleColor),
+					builder: (textColor) => Text('[$colorSwatch]', style: TextStyle(color: textColor)),
 				),
 			),
 		);
@@ -818,6 +836,7 @@ class NoteEditorState extends State<NoteEditor> {
 				ShortcutAction.outdent: () => _changeIndent(-1),
 				ShortcutAction.moveLinesUp: () => _moveLines(-1),
 				ShortcutAction.moveLinesDown: () => _moveLines(1),
+				ShortcutAction.spelling: spellingMenu.openNearCursor,
 				ShortcutAction.bold: () => _toggleEmphasis(boldMark),
 				ShortcutAction.italic: () => _toggleEmphasis(italicMark),
 				ShortcutAction.toggleCheckbox: bodyController.toggleSelectedCheckboxes,
@@ -827,11 +846,21 @@ class NoteEditorState extends State<NoteEditor> {
 				skipTraversal: true,
 				onKeyEvent: _handleBodyKeys,
 				child: Listener(
-					onPointerDown: (_) => bodyController.startTap(),
+					onPointerDown: (event) {
+						// A right-click only opens the menu
+						final isRightClick = event.buttons == kSecondaryButton;
+						spellingMenu.handlePointerDown(isRightClick: isRightClick);
+						if (!isRightClick) bodyController.startTap();
+					},
 					child: LayoutBuilder(
 						builder: (_, constraints) {
 							bodyController.wrapWidth = constraints.maxWidth - frameSidePadding * 2;
-							return _buildBodyTextField();
+							return SpellingUnderlines(
+								controller: bodyController,
+								scrollController: bodyScroll,
+								findEditable: _bodyEditable,
+								child: _buildBodyTextField(),
+							);
 						},
 					),
 				),
@@ -839,9 +868,58 @@ class NoteEditorState extends State<NoteEditor> {
 		);
 	}
 
+	// Right-click (or long-press) on a misspelled word offers suggestions above the usual copy and paste.
+	Widget _buildBodyContextMenu(BuildContext menuContext, EditableTextState editableTextState) {
+		final editable = editableTextState.renderEditable;
+		final clickPosition = editable.lastSecondaryTapDownPosition;
+		final offset = clickPosition == null
+			? bodyController.selection.extentOffset
+			: editable.getPositionForPoint(clickPosition).offset;
+		final word = bodyController.misspelledWordAt(offset);
+		if (word == null) return AdaptiveTextSelectionToolbar.editableText(editableTextState: editableTextState);
+
+		return FieldContextMenu(
+			anchor: editableTextState.contextMenuAnchors.primaryAnchor,
+			choices: [
+				..._spellingChoices(word, close: editableTextState.hideToolbar),
+				for (final item in editableTextState.contextMenuButtonItems)
+					(
+						label: AdaptiveTextSelectionToolbar.getButtonLabel(menuContext, item).toLowerCase(),
+						color: terminalDimText,
+						onTap: item.onPressed,
+					),
+			],
+		);
+	}
+
+	List<FieldMenuChoice> _spellingChoices(TextRange word, {required VoidCallback close}) {
+		final checker = bodyController.spellChecker;
+		if (checker == null) return const [];
+		final text = bodyController.text;
+		final wordText = word.textInside(text);
+		final line = lineAt(text, word.start);
+		void pick(VoidCallback action) {
+			close();
+			action();
+			bodyFocus.requestFocus();
+		}
+
+		return [
+			for (final suggestion in checker.suggestionsFor(wordText, contexts: [text.substring(line.start, line.end), text]))
+				(
+					label: suggestion,
+					color: noteColor ?? terminalAccent,
+					onTap: () => pick(() => bodyController.replaceWord(word, suggestion)),
+				),
+			(label: addToDictionaryLabel, color: terminalText, onTap: () => pick(() => checker.add(wordText))),
+		];
+	}
+
 	Widget _buildBodyTextField() {
 		return TextField(
 			controller: bodyController,
+			scrollController: bodyScroll,
+			contextMenuBuilder: _buildBodyContextMenu,
 			focusNode: bodyFocus,
 			cursorColor: noteColor,
 			style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: noteColor),

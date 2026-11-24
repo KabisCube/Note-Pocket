@@ -2,6 +2,8 @@
 // The active palette can be switched at runtime (Settings > theme). The color names below read from
 // it, so anything that draws with them picks up the new colors when the app rebuilds.
 
+import 'dart:io';
+
 import 'package:material_ui/material_ui.dart';
 
 import 'terminal_page_transition.dart';
@@ -111,13 +113,23 @@ Color get terminalDimText => currentPalette.dimText;
 Color get terminalAccent => titleColorFor(accentColorName);
 Map<String, Color> get titleColors => currentPalette.titleColors;
 
-// Keyboard focus is shown the terminal way: text and background swap colors
-ButtonStyle invertedFocusButtonStyle(Color color) {
-	bool isFocused(Set<WidgetState> states) => states.contains(WidgetState.focused);
+// Buttons under the mouse, pressed or with the keyboard focus are shown the terminal way: text and
+// background swap colors. The space beside the label stays clear, so the highlight doesn't touch a border.
+ButtonStyle invertedButtonStyle(Color color) {
+	bool isHighlighted(Set<WidgetState> states) {
+		if (states.contains(WidgetState.disabled)) return false;
+		return states.any({WidgetState.focused, WidgetState.hovered, WidgetState.pressed}.contains);
+	}
 	return ButtonStyle(
-		foregroundColor: WidgetStateProperty.resolveWith((states) => isFocused(states) ? terminalBackground : color),
-		backgroundColor: WidgetStateProperty.resolveWith((states) => isFocused(states) ? color : Colors.transparent),
+		foregroundColor: WidgetStateProperty.resolveWith((states) => isHighlighted(states) ? terminalBackground : color),
+		backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
 		overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+		padding: WidgetStatePropertyAll(EdgeInsets.symmetric(vertical: compactButtonPadding.vertical / 2)),
+		animationDuration: Duration.zero,
+		backgroundBuilder: (_, states, child) => Padding(
+			padding: EdgeInsets.symmetric(horizontal: compactButtonPadding.horizontal / 2),
+			child: ColoredBox(color: isHighlighted(states) ? color : Colors.transparent, child: child),
+		),
 	);
 }
 
@@ -128,9 +140,17 @@ const dullAmount = 0.45;
 
 Color dulled(Color color) => Color.lerp(color, terminalBackground, dullAmount)!;
 
+// A faint background that marks the row under the mouse
+const rowHighlightAmount = 0.1;
+
+Color get rowHighlightColor => Color.lerp(terminalBackground, terminalText, rowHighlightAmount)!;
+
 // Font
 const terminalFont = 'Consolas';
 const terminalFontFallback = ['DejaVu Sans Mono', 'Ubuntu Mono', 'monospace'];
+
+// Phones have no Tab or Ctrl keys, so they get line buttons at the bottom of notes, and menu rows big enough to tap
+final isPhone = Platform.isAndroid || Platform.isIOS;
 
 // Layout
 const screenPadding = 8.0;
@@ -138,7 +158,7 @@ const compactButtonPadding = EdgeInsets.symmetric(horizontal: 4, vertical: 2);
 // Every dropdown uses the same row height and padding
 const boldTextStyle = TextStyle(fontWeight: FontWeight.bold);
 const italicTextStyle = TextStyle(fontStyle: FontStyle.italic);
-const menuItemHeight = 39.0;
+final menuItemHeight = isPhone ? 35.0 : 26.0;
 const menuItemPadding = EdgeInsets.symmetric(horizontal: 10);
 RoundedRectangleBorder get squareShape => RoundedRectangleBorder(side: BorderSide(color: terminalDimText));
 
@@ -169,11 +189,10 @@ ThemeData buildTerminalTheme() {
 		dialogTheme: DialogThemeData(backgroundColor: terminalBackground, shape: squareShape),
 		popupMenuTheme: PopupMenuThemeData(color: terminalBackground, shape: squareShape, elevation: 0),
 		textButtonTheme: TextButtonThemeData(
-			style: invertedFocusButtonStyle(terminalAccent).merge(
+			style: invertedButtonStyle(terminalAccent).merge(
 				TextButton.styleFrom(
 					shape: const RoundedRectangleBorder(),
 					minimumSize: Size.zero,
-					padding: compactButtonPadding,
 					tapTargetSize: MaterialTapTargetSize.shrinkWrap,
 					splashFactory: NoSplash.splashFactory,
 				),

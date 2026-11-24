@@ -6,11 +6,15 @@ import 'notes/note_order.dart';
 import 'notes/note_storage.dart';
 import 'notes/notes_folder.dart';
 import 'notes/reminders.dart';
+import 'spelling/enchant.dart';
+import 'spelling/spell_checker.dart';
+import 'spelling/word_list.dart';
 import 'ui/font_size_control.dart';
 import 'ui/note_list_screen.dart';
 import 'ui/shortcuts.dart';
 import 'ui/storage_access_screen.dart';
 import 'ui/terminal_theme.dart';
+import 'ui/whole_pixel_scrolling.dart';
 
 const appName = 'Note Pocket';
 
@@ -22,6 +26,11 @@ Future<void> main() async {
 	keyBindings = KeyBindings.fromSaved(settings.shortcuts);
 	final order = await NoteOrder.openDefault();
 	final reminderLog = await ReminderLog.openDefault();
+	if (Platform.isLinux) {
+		final locales = WidgetsBinding.instance.platformDispatcher.locales;
+		final languages = await linuxSpellLanguages([for (final locale in locales) locale.toLanguageTag().replaceAll('-', '_')]);
+		systemSpellChecker = openEnchant(languages, addedWords: await WordList.openDefault())?..isOn = settings.checksSpelling;
+	}
 	runApp(NotePocketApp(settings: settings, order: order, reminderLog: reminderLog));
 }
 
@@ -118,7 +127,7 @@ class _NotePocketAppState extends State<NotePocketApp> with WidgetsBindingObserv
 			title: appName,
 			theme: buildTerminalTheme(),
 			scrollBehavior: const MaterialScrollBehavior().copyWith(scrollbars: false),
-			builder: (context, child) => FontSizeControl(settings: widget.settings, child: child!),
+			builder: (context, child) => FontSizeControl(settings: widget.settings, child: WholePixelScrolling(child: child!)),
 			home: _buildHome(),
 		);
 	}

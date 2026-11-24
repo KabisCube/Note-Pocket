@@ -26,9 +26,11 @@ const themeKey = 'theme';
 const accentColorKey = 'accent_color';
 const fontSizeChangeKey = 'font_size_change';
 const saveModeKey = 'save_mode';
+const spellingKey = 'spelling';
 const shortcutKeyPrefix = 'shortcut.';
 const trueValue = 'true';
 const manualSaveValue = 'manual';
+const offValue = 'off';
 
 class AppSettings {
 	AppSettings(this.file, this._values);
@@ -76,6 +78,11 @@ class AppSettings {
 	bool get savesOnlyOnRequest => _values[saveModeKey] == manualSaveValue;
 
 	Future<void> setSavesOnlyOnRequest(bool onlyOnRequest) => _set(saveModeKey, onlyOnRequest ? manualSaveValue : null);
+
+	// On unless turned off
+	bool get checksSpelling => _values[spellingKey] != offValue;
+
+	Future<void> setChecksSpelling(bool isOn) => _set(spellingKey, isOn ? null : offValue);
 
 	// Changed keyboard shortcuts in their saved form, by action name
 	Map<String, String> get shortcuts => _valuesStartingWith(shortcutKeyPrefix);

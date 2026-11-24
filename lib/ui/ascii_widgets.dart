@@ -270,7 +270,7 @@ class AsciiFrame extends StatelessWidget {
 		final baseStyle = Theme.of(context).textButtonTheme.style ?? const ButtonStyle();
 		return TextButtonTheme(
 			data: TextButtonThemeData(
-				style: invertedFocusButtonStyle(accentColor!).merge(baseStyle),
+				style: invertedButtonStyle(accentColor!).merge(baseStyle),
 			),
 			child: actionRow,
 		);
@@ -284,33 +284,210 @@ class AsciiFrame extends StatelessWidget {
 	}
 }
 
-// Shows keyboard focus the terminal way, with text and background swapped, for labels inside a
-// focusable widget like a menu button or a note. It follows the nearest focusable widget above it.
-// isHighlighted inverts it too, like for a note under the mouse.
-class InvertedWhenFocused extends StatelessWidget {
-	const InvertedWhenFocused({super.key, required this.color, required this.builder, this.isHighlighted = false});
+// A label that is inverted under the mouse, or when the focusable widget it is in has the keyboard focus,
+// like a menu button or a note. isHighlighted inverts it too, and followsMouse is off when the widget
+// it is in handles the mouse itself.
+class InvertedLabel extends StatefulWidget {
+	const InvertedLabel({
+		super.key,
+		required this.color,
+		required this.builder,
+		this.isHighlighted = false,
+		this.followsMouse = true,
+	});
 
 	final Color color;
 	final Widget Function(Color textColor) builder;
 	final bool isHighlighted;
+	final bool followsMouse;
+
+	@override
+	State<InvertedLabel> createState() => _InvertedLabelState();
+}
+
+class _InvertedLabelState extends State<InvertedLabel> {
+	bool isHovered = false;
 
 	@override
 	Widget build(BuildContext context) {
 		final hasFocus = Focus.maybeOf(context)?.hasPrimaryFocus ?? false;
 		final isUsingKeyboard = FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
-		final isInverted = isHighlighted || (hasFocus && isUsingKeyboard);
-		return ColoredBox(
-			color: isInverted ? color : Colors.transparent,
-			child: builder(isInverted ? terminalBackground : color),
+		final isInverted = widget.isHighlighted || (widget.followsMouse && isHovered) || (hasFocus && isUsingKeyboard);
+		return MouseRegion(
+			onEnter: (_) => setState(() => isHovered = true),
+			onExit: (_) => setState(() => isHovered = false),
+			child: ColoredBox(
+				color: isInverted ? widget.color : Colors.transparent,
+				child: widget.builder(isInverted ? terminalBackground : widget.color),
+			),
 		);
 	}
 }
 
-Widget invertedWhenFocusedText(String text, Color color, {TextStyle? style}) {
-	return InvertedWhenFocused(
+Widget invertedLabelText(String text, Color color) {
+	return InvertedLabel(
 		color: color,
-		builder: (textColor) => Text(text, style: (style ?? const TextStyle()).copyWith(color: textColor)),
+		builder: (textColor) => Text(text, style: TextStyle(color: textColor)),
 	);
+}
+
+// Gets a faint background under the mouse, so the eye can follow a wide row from one end to the other.
+class HoverRow extends StatefulWidget {
+	const HoverRow({super.key, required this.children});
+
+	final List<Widget> children;
+
+	@override
+	State<HoverRow> createState() => _HoverRowState();
+}
+
+class _HoverRowState extends State<HoverRow> {
+	bool isHovered = false;
+
+	@override
+	Widget build(BuildContext context) {
+		return MouseRegion(
+			onEnter: (_) => setState(() => isHovered = true),
+			onExit: (_) => setState(() => isHovered = false),
+			child: ColoredBox(
+				color: isHovered ? rowHighlightColor : Colors.transparent,
+				child: Row(children: widget.children),
+			),
+		);
+	}
+}
+
+// A row of any dropdown, inverted when highlighted.
+class _MenuRow extends StatelessWidget {
+	const _MenuRow({required this.label, required this.color, required this.isHighlighted});
+
+	final String label;
+	final Color color;
+	final bool isHighlighted;
+
+	@override
+	Widget build(BuildContext context) {
+		return Container(
+			height: menuItemHeight,
+			padding: menuItemPadding,
+			alignment: Alignment.centerLeft,
+			color: isHighlighted ? color : null,
+			child: Text(label, style: TextStyle(color: isHighlighted ? terminalBackground : color)),
+		);
+	}
+}
+
+// A choice in a button's dropdown. The mouse moves the keyboard's highlight, so there is only ever one.
+class TerminalMenuItem<T> extends PopupMenuEntry<T> {
+	const TerminalMenuItem({super.key, required this.value, required this.label, required this.color});
+
+	final T value;
+	final String label;
+	final Color color;
+
+	@override
+	double get height => menuItemHeight;
+
+	@override
+	bool represents(T? value) => value == this.value;
+
+	@override
+	State<TerminalMenuItem<T>> createState() => _TerminalMenuItemState<T>();
+}
+
+class _TerminalMenuItemState<T> extends State<TerminalMenuItem<T>> {
+	final focusNode = FocusNode();
+	bool isHighlighted = false;
+
+	@override
+	void dispose() {
+		focusNode.dispose();
+		super.dispose();
+	}
+
+	void _handleHover(bool hovered) {
+		hovered ? focusNode.requestFocus() : focusNode.unfocus();
+	}
+
+	@override
+	Widget build(BuildContext context) {
+		return InkWell(
+			focusNode: focusNode,
+			onTap: () => Navigator.pop<T>(context, widget.value),
+			onHover: _handleHover,
+			onFocusChange: (focused) => setState(() => isHighlighted = focused),
+			child: _MenuRow(label: widget.label, color: widget.color, isHighlighted: isHighlighted),
+		);
+	}
+}
+
+// A bordered list of choices at the given anchor, for a text field, which keeps the focus.
+// The choice under the mouse is inverted. The field can move the same highlight with its own keys
+// through the highlighted index, which is null when no choice is.
+typedef FieldMenuChoice = ({String label, Color color, VoidCallback? onTap});
+
+class FieldContextMenu extends StatefulWidget {
+	const FieldContextMenu({super.key, required this.anchor, required this.choices, this.highlighted});
+
+	final Offset anchor;
+	final List<FieldMenuChoice> choices;
+	final ValueNotifier<int?>? highlighted;
+
+	@override
+	State<FieldContextMenu> createState() => _FieldContextMenuState();
+}
+
+class _FieldContextMenuState extends State<FieldContextMenu> {
+	final ownHighlighted = ValueNotifier<int?>(null);
+
+	ValueNotifier<int?> get highlighted => widget.highlighted ?? ownHighlighted;
+
+	@override
+	void dispose() {
+		ownHighlighted.dispose();
+		super.dispose();
+	}
+
+	void _handleHover(int index, bool hovered) {
+		if (hovered) {
+			highlighted.value = index;
+		} else if (highlighted.value == index) {
+			highlighted.value = null;
+		}
+	}
+
+	@override
+	Widget build(BuildContext context) {
+		return CustomSingleChildLayout(
+			delegate: DesktopTextSelectionToolbarLayoutDelegate(anchor: widget.anchor),
+			child: Material(
+				color: terminalBackground,
+				shape: squareShape,
+				child: IntrinsicWidth(
+					child: ValueListenableBuilder(
+						valueListenable: highlighted,
+						builder: (_, highlightedIndex, _) => Column(
+							mainAxisSize: MainAxisSize.min,
+							crossAxisAlignment: CrossAxisAlignment.stretch,
+							children: [
+								for (final (index, choice) in widget.choices.indexed)
+									_buildRow(index, choice, isHighlighted: index == highlightedIndex),
+							],
+						),
+					),
+				),
+			),
+		);
+	}
+
+	Widget _buildRow(int index, FieldMenuChoice choice, {required bool isHighlighted}) {
+		return InkWell(
+			canRequestFocus: false,
+			onTap: choice.onTap,
+			onHover: (hovered) => _handleHover(index, hovered),
+			child: _MenuRow(label: choice.label, color: choice.color, isHighlighted: isHighlighted),
+		);
+	}
 }
 
 // The new note button: a full-width box in the accent color.
